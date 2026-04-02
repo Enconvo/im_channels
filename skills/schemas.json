@@ -1,0 +1,495 @@
+[
+  {
+    "name": "check_connection",
+    "title": "check_connection",
+    "description": "Check if a channel's credentials are valid by calling the platform API",
+    "routePath": "im_channels/check_connection",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel_provider": {
+          "type": "string",
+          "description": "The provider command key"
+        }
+      },
+      "required": [
+        "channel_provider"
+      ]
+    }
+  },
+  {
+    "name": "configured_channels",
+    "title": "configured_channels",
+    "description": "Returns all IM channel provider commands with configured status, enabled state, bound agent, and launch status",
+    "routePath": "im_channels/configured_channels",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "create_channel",
+    "title": "create_channel",
+    "description": "Create a new channel by duplicating the base provider command for a platform",
+    "routePath": "im_channels/create_channel",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "platform": {
+          "type": "string",
+          "description": "The platform name (e.g. \"discord\", \"telegram\")"
+        },
+        "title": {
+          "type": "string",
+          "description": "Custom title for the new channel (e.g. \"Sensei English Bot\"). If omitted, auto-generates \"Discord 2\", \"Telegram 3\", etc."
+        },
+        "bound_agent": {
+          "type": "string",
+          "description": "The agent command key to bind to this channel (e.g. \"chat_with_ai|chat_command\"). If provided, the channel's bound_agent preference will be set automatically."
+        }
+      },
+      "required": [
+        "platform"
+      ]
+    }
+  },
+  {
+    "name": "launch_channel",
+    "title": "launch_channel",
+    "description": "Launch a channel listener for a provider, reading config from preferences or using credential overrides",
+    "routePath": "im_channels/launch_channel",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel_provider": {
+          "type": "string",
+          "description": "The provider command key (e.g. \"im_channels|discord\")"
+        },
+        "agent_command_key": {
+          "type": "string",
+          "description": "Override: agent command key to bind"
+        },
+        "botToken": {
+          "type": "string",
+          "description": "Override: bot token for authentication"
+        },
+        "appToken": {
+          "type": "string",
+          "description": "Override: app token (Slack Socket Mode)"
+        },
+        "appId": {
+          "type": "string",
+          "description": "Override: app ID (Feishu)"
+        },
+        "appSecret": {
+          "type": "string",
+          "description": "Override: app secret (Feishu)"
+        },
+        "domain": {
+          "type": "string",
+          "description": "Override: API domain (Feishu)"
+        }
+      },
+      "required": [
+        "channel_provider"
+      ]
+    }
+  },
+  {
+    "name": "launched_channels",
+    "title": "launched_channels",
+    "description": "List all currently active channel connections from shared state",
+    "routePath": "im_channels/launched_channels",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "restore_channels",
+    "title": "restore_channels",
+    "description": "Restore all enabled channels, called on app startup or manually",
+    "routePath": "im_channels/restore_channels",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "stop_channel",
+    "title": "stop_channel",
+    "description": "Stop a running channel listener",
+    "routePath": "im_channels/stop_channel",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel_provider": {
+          "type": "string",
+          "description": "The provider command key (e.g. \"im_channels|discord\")"
+        }
+      },
+      "required": [
+        "channel_provider"
+      ]
+    }
+  },
+  {
+    "name": "typing_indicator",
+    "title": "typing_indicator",
+    "description": "Send a typing indicator to a channel, best-effort with errors silently ignored",
+    "routePath": "im_channels/typing_indicator",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel_provider": {
+          "type": "string",
+          "description": "The channel provider key (e.g. \"im_channels|discord\")"
+        },
+        "channel_id": {
+          "type": "string",
+          "description": "The channel ID"
+        }
+      },
+      "required": [
+        "channel_provider",
+        "channel_id"
+      ]
+    }
+  },
+  {
+    "name": "discord_actions",
+    "title": "discord_actions",
+    "description": "Router for discord_actions",
+    "routes": [
+      {
+        "name": "bot_api",
+        "description": "Call any Discord REST API endpoint directly. The bot token and base URL are injected automatically — you only need to specify the HTTP method, path, and optional body. This is a generic passthrough to the Discord API v10. Use it for any endpoint not covered by the dedicated tools (reply, edit_message, react, fetch_messages, download_attachment). Image fields (`avatar`, `icon`, `image`, `splash`, `banner`) accept a local file path (starting with \"/\") — it will be auto-converted to a base64 data URI as Discord requires. You can also use `local_api enconvo/upload_file {\"filePath\": \"/path/to/file\"}` to get a hosted URL. Common endpoints: Bot profile: - `GET /users/@me` — get bot user info (username, id, avatar hash, etc.) - `PATCH /users/@me` — update bot profile. Body: `{\"username\": \"New Name\", \"avatar\": \"/path/to/image.png\"}` Server (Guild) info: - `GET /guilds/{guild_id}` — get server info (name, icon, owner, member count) - `GET /guilds/{guild_id}/channels` — list all channels in a server - `GET /guilds/{guild_id}/members?limit=100` — list server members - `GET /guilds/{guild_id}/roles` — list server roles - `PATCH /guilds/{guild_id}` — modify server (name, icon, etc.) Channel management: - `GET /channels/{channel_id}` — get channel info (name, topic, type) - `PATCH /channels/{channel_id}` — modify channel (name, topic, permissions) - `DELETE /channels/{channel_id}` — delete a channel - `POST /guilds/{guild_id}/channels` — create a new channel. Body: `{\"name\": \"new-channel\", \"type\": 0}` Messages: - `POST /channels/{channel_id}/messages` — send a message. Body: `{\"content\": \"Hello!\"}` - `GET /channels/{channel_id}/messages?limit=50` — get recent messages - `PATCH /channels/{channel_id}/messages/{message_id}` — edit a message - `DELETE /channels/{channel_id}/messages/{message_id}` — delete a message - `PUT /channels/{channel_id}/pins/{message_id}` — pin a message - `DELETE /channels/{channel_id}/pins/{message_id}` — unpin a message Member management: - `GET /guilds/{guild_id}/members/{user_id}` — get a member's info - `PATCH /guilds/{guild_id}/members/{user_id}` — modify member (nickname, roles). Body: `{\"nick\": \"New Nick\"}` - `PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id}` — add role to member - `DELETE /guilds/{guild_id}/members/{user_id}/roles/{role_id}` — remove role from member - `PUT /guilds/{guild_id}/bans/{user_id}` — ban a member - `DELETE /guilds/{guild_id}/bans/{user_id}` — unban a member - `DELETE /guilds/{guild_id}/members/{user_id}` — kick a member Reactions: - `PUT /channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me` — add reaction - `DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me` — remove reaction Invites: - `POST /channels/{channel_id}/invites` — create invite. Body: `{\"max_age\": 86400, \"max_uses\": 10}` - `GET /guilds/{guild_id}/invites` — list server invites Full reference: https://discord.com/developers/docs/reference",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The channel provider key (e.g. \"im_channels|discord\")"
+            },
+            "http_method": {
+              "type": "string",
+              "description": "HTTP method (GET, POST, PUT, PATCH, DELETE)"
+            },
+            "path": {
+              "type": "string",
+              "description": "The Discord API path (e.g. \"/users/@me\", \"/channels/123/messages\"). Do NOT include the base URL."
+            },
+            "body": {
+              "type": "object",
+              "description": "The JSON body to send (for POST/PUT/PATCH requests). For the `avatar` field in PATCH /users/@me, pass a local file path (starting with \"/\") — it will be read and converted to a data URI automatically."
+            }
+          },
+          "required": [
+            "channel_provider",
+            "http_method",
+            "path"
+          ]
+        },
+        "routePath": "im_channels/discord_actions/bot_api"
+      },
+      {
+        "name": "download_attachment",
+        "description": "Download all attachments from a Discord message to local inbox directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The provider command key identifying which Discord connection to use"
+            },
+            "channel_id": {
+              "type": "string",
+              "description": "Channel ID where the message is"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Message ID to download attachments from"
+            }
+          },
+          "required": [
+            "channel_provider",
+            "channel_id",
+            "message_id"
+          ]
+        },
+        "routePath": "im_channels/discord_actions/download_attachment"
+      },
+      {
+        "name": "edit_message",
+        "description": "Edit a message the bot previously sent in Discord",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The provider command key identifying which Discord connection to use"
+            },
+            "channel_id": {
+              "type": "string",
+              "description": "Channel ID where the message is"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Message ID to edit (must be bot's own message)"
+            },
+            "text": {
+              "type": "string",
+              "description": "New text content"
+            }
+          },
+          "required": [
+            "channel_provider",
+            "channel_id",
+            "message_id",
+            "text"
+          ]
+        },
+        "routePath": "im_channels/discord_actions/edit_message"
+      },
+      {
+        "name": "fetch_messages",
+        "description": "Pull recent message history from a Discord channel sorted oldest-first",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The provider command key identifying which Discord connection to use"
+            },
+            "channel_id": {
+              "type": "string",
+              "description": "Channel ID to fetch messages from"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Number of messages to fetch (max 100)",
+              "default": 50
+            }
+          },
+          "required": [
+            "channel_provider",
+            "channel_id"
+          ]
+        },
+        "routePath": "im_channels/discord_actions/fetch_messages"
+      },
+      {
+        "name": "react",
+        "description": "Add an emoji reaction to a Discord message by ID",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The provider command key identifying which Discord connection to use"
+            },
+            "channel_id": {
+              "type": "string",
+              "description": "Channel ID where the message is"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Message ID to react to"
+            },
+            "emoji": {
+              "type": "string",
+              "description": "Emoji to react with. Unicode emoji (e.g. \"👍\") or custom emoji in <:name:id> form"
+            }
+          },
+          "required": [
+            "channel_provider",
+            "channel_id",
+            "message_id",
+            "emoji"
+          ]
+        },
+        "routePath": "im_channels/discord_actions/react"
+      },
+      {
+        "name": "reply",
+        "description": "Send a message to a Discord channel or DM with optional file attachments and threading",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The channel provider key"
+            },
+            "text": {
+              "type": "string",
+              "description": "Message text to send"
+            },
+            "chat_id": {
+              "type": "string",
+              "description": "Target channel ID. If omitted, sends to the default configured channel."
+            },
+            "user_id": {
+              "type": "string",
+              "description": "Target user ID (snowflake) for sending a DM. Only use when explicitly asked to DM a user."
+            },
+            "reply_to": {
+              "type": "string",
+              "description": "Message ID to reply to (creates threaded reply). Only use in channel messages, not DMs."
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": ""
+              },
+              "description": "File paths (absolute local paths) or URLs to attach. Max 10, 25MB each for local files. URLs are sent as embeds."
+            }
+          },
+          "required": [
+            "channel_provider",
+            "text"
+          ]
+        },
+        "routePath": "im_channels/discord_actions/reply"
+      }
+    ]
+  },
+  {
+    "name": "telegram_actions",
+    "title": "telegram_actions",
+    "description": "Router for telegram_actions",
+    "routes": [
+      {
+        "name": "bot_api",
+        "description": "Call any Telegram Bot API method directly. The bot token is injected automatically — you only need to specify the method name and its parameters. This is a generic passthrough to the Telegram Bot API. Use it for any method not covered by the dedicated tools (reply, edit_message, react). File upload: any value that is a local file path (starting with \"/\") or a URL (http/https) inside params — at any nesting depth — will be automatically downloaded and uploaded via multipart/form-data using Telegram's `attach://` syntax. This works for top-level fields and nested InputFile fields (e.g. InputProfilePhoto). You can also use `local_api enconvo/upload_file {\"filePath\": \"/path/to/file\"}` to upload a file first and get a hosted URL. Common methods: - `getMe` — get bot info (username, id, etc.) - `setMyProfilePhoto` — set bot's own profile photo. Params: `{\"photo\": {\"type\": \"static\", \"photo\": \"/path/to/image.png\"}}` or `{\"photo\": {\"type\": \"static\", \"photo\": \"https://...\"}}` - `deleteMyProfilePhoto` — remove bot's profile photo - `setMyName` — change bot display name. Params: `{\"name\": \"New Name\"}` - `setMyDescription` — change bot description. Params: `{\"description\": \"text\"}` - `setMyShortDescription` — change bot short description shown in profile - `setChatPhoto` — set group chat photo (bot must be admin). Params: `{\"chat_id\": \"...\", \"photo\": \"/path/to/photo.png\"}` - `deleteChatPhoto` — remove group chat photo - `getChat` — get chat details. Params: `{\"chat_id\": \"...\"}` - `getChatMemberCount` — count members. Params: `{\"chat_id\": \"...\"}` - `getChatMember` — get a specific member's info. Params: `{\"chat_id\": \"...\", \"user_id\": 123}` - `banChatMember` / `unbanChatMember` — moderation - `pinChatMessage` / `unpinChatMessage` — pin/unpin messages - `setMyCommands` — set bot command menu. Params: `{\"commands\": [{\"command\": \"start\", \"description\": \"Start the bot\"}]}` - `deleteMyCommands` — remove bot command menu - `getMyCommands` — list current bot commands - `setChatMenuButton` — set bot menu button - `sendSticker` — send a sticker. Params: `{\"chat_id\": \"...\", \"sticker\": \"/path/to/sticker.webp\"}` - `createNewStickerSet` / `addStickerToSet` — sticker set management - `getCustomEmojiStickers` — get custom emoji stickers by IDs - `setMessageReaction` — react to a message (also available as dedicated `react` tool) - `forwardMessage` — forward a message. Params: `{\"chat_id\": \"...\", \"from_chat_id\": \"...\", \"message_id\": 123}` - `copyMessage` — copy a message without \"forwarded\" label - `exportChatInviteLink` — generate invite link for a group - `setChatTitle` / `setChatDescription` — change group title/description - `leaveChat` — make the bot leave a chat Full reference: https://core.telegram.org/bots/api",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The channel provider key (e.g. \"im_channels|telegram\")"
+            },
+            "method": {
+              "type": "string",
+              "description": "The Telegram Bot API method name (e.g. \"setMyName\", \"setMyProfilePhoto\", \"getMe\"). See https://core.telegram.org/bots/api for all available methods."
+            },
+            "params": {
+              "type": "object",
+              "description": "The parameters to pass to the API method as a JSON object. Each method has its own parameters — refer to the Telegram Bot API docs. For file upload fields, pass a local file path (starting with \"/\") and it will be uploaded automatically via multipart/form-data."
+            }
+          },
+          "required": [
+            "channel_provider",
+            "method"
+          ]
+        },
+        "routePath": "im_channels/telegram_actions/bot_api"
+      },
+      {
+        "name": "edit_message",
+        "description": "Edit a message the bot previously sent in Telegram",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The provider command key identifying which Telegram connection to use"
+            },
+            "chat_id": {
+              "type": "string",
+              "description": "Chat ID where the message is"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Message ID to edit (must be bot's own message)"
+            },
+            "text": {
+              "type": "string",
+              "description": "New text content"
+            }
+          },
+          "required": [
+            "channel_provider",
+            "chat_id",
+            "message_id",
+            "text"
+          ]
+        },
+        "routePath": "im_channels/telegram_actions/edit_message"
+      },
+      {
+        "name": "react",
+        "description": "Add an emoji reaction to a Telegram message by ID",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The provider command key identifying which Telegram connection to use"
+            },
+            "chat_id": {
+              "type": "string",
+              "description": "Chat ID where the message is"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Message ID to react to"
+            },
+            "emoji": {
+              "type": "string",
+              "description": "Emoji to react with. Only Telegram's fixed whitelist is accepted"
+            }
+          },
+          "required": [
+            "channel_provider",
+            "chat_id",
+            "message_id",
+            "emoji"
+          ]
+        },
+        "routePath": "im_channels/telegram_actions/react"
+      },
+      {
+        "name": "reply",
+        "description": "Send a message to a Telegram chat with optional file attachments and threading",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel_provider": {
+              "type": "string",
+              "description": "The channel provider key"
+            },
+            "text": {
+              "type": "string",
+              "description": "Message text to send"
+            },
+            "chat_id": {
+              "type": "string",
+              "description": "Target chat ID. If omitted, sends to the default configured chat."
+            },
+            "reply_to": {
+              "type": "string",
+              "description": "Message ID to reply to (creates native threading). Only use in group chats, not private chats."
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": ""
+              },
+              "description": "Absolute file paths to attach. Images (.jpg/.png/.gif/.webp) as photos; others as documents. Max 50MB each."
+            }
+          },
+          "required": [
+            "channel_provider",
+            "text"
+          ]
+        },
+        "routePath": "im_channels/telegram_actions/reply"
+      }
+    ]
+  }
+]

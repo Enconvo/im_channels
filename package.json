@@ -1,0 +1,131 @@
+{
+  "$schema": "https://enconvo.com/schemas/extension.json",
+  "name": "im_channels",
+  "version": "0.0.8",
+  "description": "IM channel integration for Telegram and Discord with platform-specific tools and persistent channel listeners.",
+  "title": "IM Channels",
+  "icon": "icon.png",
+  "author": "ysnows",
+  "license": "MIT",
+  "categories": [
+    "Tools"
+  ],
+  "type": "module",
+  "commands": [
+    {
+      "name": "discord",
+      "title": "Discord",
+      "description": "Discord messaging channel provider",
+      "icon": "discord.png",
+      "mode": "no-view",
+      "commandType": "provider",
+      "provider_category": "im_channel",
+      "hidden": true,
+      "preferences": [
+        {
+          "name": "enabled",
+          "type": "checkbox",
+          "title": "Enable Channel",
+          "description": "Enable real-time message listening for this channel",
+          "default": false,
+          "label": "Enable"
+        },
+        {
+          "name": "bound_agent",
+          "type": "dropdown",
+          "title": "Bound Agent",
+          "description": "The agent that handles incoming messages from this channel",
+          "required": false,
+          "dataProxy": "im_channels|agent_list_dropdown",
+          "placeholder": "Select an agent..."
+        },
+        {
+          "name": "channel_id",
+          "type": "textfield",
+          "title": "Channel ID",
+          "description": "Default Discord channel ID to send messages to (right-click channel → Copy Channel ID)",
+          "required": false,
+          "placeholder": "e.g. 1483500371065180172"
+        },
+        {
+          "name": "botToken",
+          "type": "password",
+          "title": "Bot Token",
+          "description": "Discord Bot Token from Developer Portal",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "telegram",
+      "title": "Telegram",
+      "description": "Telegram messaging channel provider",
+      "icon": "telegram.png",
+      "mode": "no-view",
+      "commandType": "provider",
+      "provider_category": "im_channel",
+      "hidden": true,
+      "preferences": [
+        {
+          "name": "enabled",
+          "type": "checkbox",
+          "title": "Enable Channel",
+          "description": "Enable real-time message listening for this channel",
+          "default": false,
+          "label": "Enable"
+        },
+        {
+          "name": "bound_agent",
+          "type": "dropdown",
+          "title": "Bound Agent",
+          "description": "The agent that handles incoming messages from this channel",
+          "required": false,
+          "dataProxy": "im_channels|agent_list_dropdown",
+          "placeholder": "Select an agent..."
+        },
+        {
+          "name": "channel_id",
+          "type": "textfield",
+          "title": "Chat ID",
+          "description": "Default Telegram chat ID to send messages to",
+          "required": false,
+          "placeholder": "e.g. -1001234567890"
+        },
+        {
+          "name": "botToken",
+          "type": "password",
+          "title": "Bot Token",
+          "description": "Telegram Bot API Token from @BotFather",
+          "required": true,
+          "placeholder": "123456:ABC-DEF..."
+        }
+      ]
+    }
+  ],
+  "dependencies": {
+    "@enconvo/api": "link:../../enconvo.nodejs/enconvo_api",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "prettier": "^3.4.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.2"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "lint:fix": "npm run lint --fix",
+    "format": "prettier --write \"**/*.ts\"",
+    "format:check": "prettier --list-different \"**/*.ts\"",
+    "build": "enconvo dev",
+    "dev": "enconvo dev --dev"
+  },
+  "minAppVersion": "1.8.8",
+  "lifecycle": {
+    "onApiServerStarted": {
+      "type": "api",
+      "path": "im_channels/restore_channels"
+    }
+  }
+}
