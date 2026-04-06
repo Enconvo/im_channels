@@ -1,20 +1,15 @@
+import { PreferenceManageUtils } from "@enconvo/api";
 import { ChannelConnectionManager } from "../connection_manager.ts";
 
 interface LaunchChannelParams {
     /** The provider command key (e.g. "im_channels|discord") @required */
     channel_provider: string;
-    /** Override: agent command key to bind */
-    agent_command_key?: string;
-    /** Override: bot token for authentication */
+    /** The agent command key to bind to this channel (e.g. "chat_with_ai|chat_command"). If provided, the channel's bound_agent preference will be set automatically. */
+    bound_agent?: string;
+    /** The bot token for the platform (e.g. Discord Bot Token, Telegram Bot API Token). Will be set as the botToken preference on the new channel. */
     botToken?: string;
-    /** Override: app token (Slack Socket Mode) */
-    appToken?: string;
-    /** Override: app ID (Feishu) */
-    appId?: string;
-    /** Override: app secret (Feishu) */
-    appSecret?: string;
-    /** Override: API domain (Feishu) */
-    domain?: string;
+    /** Whether to enable real-time message listening for this channel @default false */
+    enabled?: boolean;
 }
 
 /**
@@ -32,8 +27,8 @@ export default async function main(request: Request) {
         return Response.json({ error: "Invalid request body" }, { status: 400 });
     }
 
-    const { channel_provider, ...overrides } = params;
-    console.log("[IM launch_channel] channel_provider:", channel_provider, "overrides keys:", Object.keys(overrides));
+    const { channel_provider, bound_agent, botToken, enabled } = params;
+    console.log("[IM launch_channel] channel_provider:", channel_provider);
 
     if (!channel_provider) {
         console.error("[IM launch_channel] Missing channel_provider");
@@ -43,10 +38,26 @@ export default async function main(request: Request) {
         );
     }
 
+    // Save provided params to config before launching
+    const prefsToSet: { keys: string[]; value: any }[] = [];
+    if (bound_agent) prefsToSet.push({ keys: ["bound_agent"], value: bound_agent });
+    if (botToken) prefsToSet.push({ keys: ["botToken"], value: botToken });
+    if (enabled !== undefined) prefsToSet.push({ keys: ["enabled"], value: enabled });
+
+    for (const pref of prefsToSet) {
+        try {
+            await PreferenceManageUtils.updatePreference({
+                ...pref,
+                preferenceKey: channel_provider,
+            });
+        } catch (err: any) {
+            console.error(`[IM launch_channel] Failed to set ${pref.keys[0]}:`, err.message);
+        }
+    }
+
     try {
         const connection = await ChannelConnectionManager.shared().launch(
             channel_provider,
-            Object.keys(overrides).length > 0 ? overrides : undefined,
         );
         console.log("[IM launch_channel] result:", connection.status, "channelProvider:", connection.channelProvider, "agent:", connection.agentCommandKey);
         return Response.json({

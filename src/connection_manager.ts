@@ -28,14 +28,7 @@ interface ProviderConfig {
     bound_agent?: string;
     agent_command_key?: string;
     botToken?: string;
-    appToken?: string;
     [key: string]: any;
-}
-
-interface LaunchOverrides {
-    agent_command_key?: string;
-    botToken?: string;
-    appToken?: string;
 }
 
 const STATE_DIR = path.join(os.homedir(), ".config", "enconvo", "im_channels");
@@ -84,7 +77,7 @@ class ChannelConnectionManager {
         process.on("exit", shutdown);
     }
 
-    async launch(channelProvider: string, overrides?: LaunchOverrides): Promise<ActiveConnection> {
+    async launch(channelProvider: string): Promise<ActiveConnection> {
         this.registerShutdownHooks();
 
         // Check if already launched in this Worker
@@ -120,12 +113,6 @@ class ChannelConnectionManager {
             if (savedConfig) config = savedConfig;
         } catch {
             // Preferences might not be available (e.g. direct API call)
-        }
-
-        if (overrides) {
-            if (overrides.agent_command_key) config.bound_agent = overrides.agent_command_key;
-            if (overrides.botToken) config.botToken = overrides.botToken;
-            if (overrides.appToken) config.appToken = overrides.appToken;
         }
 
         const agentCommandKey = config.bound_agent;

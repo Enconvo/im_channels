@@ -17,7 +17,7 @@ interface ProviderInfo {
 }
 
 /**
- * Returns all IM channel provider commands with configured status, enabled state, bound agent, and launch status
+ * Returns all IM channel provider commands with configured status, enabled state, bind agent, and launch status
  * @param {Request} request - Request object (no body required)
  * @returns Array of channel providers with their configuration and launch state
  */

@@ -7,6 +7,10 @@ interface CreateChannelParams {
     title?: string;
     /** The agent command key to bind to this channel (e.g. "chat_with_ai|chat_command"). If provided, the channel's bound_agent preference will be set automatically. */
     bound_agent?: string;
+    /** The bot token for the platform (e.g. Discord Bot Token, Telegram Bot API Token). Will be set as the botToken preference on the new channel. */
+    botToken?: string;
+    /** Whether to enable real-time message listening for this channel @default false */
+    enabled?: boolean;
 }
 
 /**
@@ -16,7 +20,7 @@ interface CreateChannelParams {
  */
 export default async function main(request: Request) {
     const params = (await request.json()) as CreateChannelParams;
-    const { platform, title, bound_agent } = params;
+    const { platform, title, bound_agent, botToken, enabled } = params;
 
     if (!platform) {
         return Response.json({ error: "Missing required field: platform" }, { status: 400 });
@@ -36,16 +40,20 @@ export default async function main(request: Request) {
 
     const newCommandKey = result.command.commandKey as string;
 
-    // Set bound_agent preference if provided
-    if (bound_agent) {
+    // Set preferences on the new channel if provided
+    const prefsToSet: { keys: string[]; value: any }[] = [];
+    if (bound_agent) prefsToSet.push({ keys: ["bound_agent"], value: bound_agent });
+    if (botToken) prefsToSet.push({ keys: ["botToken"], value: botToken });
+    if (enabled !== undefined) prefsToSet.push({ keys: ["enabled"], value: enabled });
+
+    for (const pref of prefsToSet) {
         try {
             await PreferenceManageUtils.updatePreference({
-                keys: ["bound_agent"],
-                value: bound_agent,
+                ...pref,
                 preferenceKey: newCommandKey,
             });
         } catch (err: any) {
-            console.error(`[IM] Failed to set bound_agent for ${newCommandKey}:`, err.message);
+            console.error(`[IM] Failed to set ${pref.keys[0]} for ${newCommandKey}:`, err.message);
         }
     }
 

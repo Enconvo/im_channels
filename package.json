@@ -2,7 +2,7 @@
   "$schema": "https://enconvo.com/schemas/extension.json",
   "name": "im_channels",
   "version": "0.0.8",
-  "description": "IM channel integration for Telegram and Discord with platform-specific tools and persistent channel listeners.",
+  "description": "IM channel integration for Telegram and Discord. Each channel is essentially a bot on the IM platform that can interact with an Enconvo agent — when a message arrives, the bind agent automatically processes and replies. One agent can serve multiple channels, but each channel is bound to exactly one agent.",
   "title": "IM Channels",
   "icon": "icon.png",
   "author": "ysnows",
@@ -33,19 +33,11 @@
         {
           "name": "bound_agent",
           "type": "dropdown",
-          "title": "Bound Agent",
+          "title": "bind agent",
           "description": "The agent that handles incoming messages from this channel",
           "required": false,
-          "dataProxy": "im_channels|agent_list_dropdown",
+          "dataProxy": "im_channels/agent_list_dropdown",
           "placeholder": "Select an agent..."
-        },
-        {
-          "name": "channel_id",
-          "type": "textfield",
-          "title": "Channel ID",
-          "description": "Default Discord channel ID to send messages to (right-click channel → Copy Channel ID)",
-          "required": false,
-          "placeholder": "e.g. 1483500371065180172"
         },
         {
           "name": "botToken",
@@ -77,19 +69,11 @@
         {
           "name": "bound_agent",
           "type": "dropdown",
-          "title": "Bound Agent",
+          "title": "bind agent",
           "description": "The agent that handles incoming messages from this channel",
           "required": false,
-          "dataProxy": "im_channels|agent_list_dropdown",
+          "dataProxy": "im_channels/agent_list_dropdown",
           "placeholder": "Select an agent..."
-        },
-        {
-          "name": "channel_id",
-          "type": "textfield",
-          "title": "Chat ID",
-          "description": "Default Telegram chat ID to send messages to",
-          "required": false,
-          "placeholder": "e.g. -1001234567890"
         },
         {
           "name": "botToken",

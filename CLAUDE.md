@@ -74,7 +74,7 @@ Managed by `src/channel_relations.ts`. Stored via `PreferenceManageUtils` at key
 - Channel → Agent lookup is O(1); Agent → Channels is O(n) filter
 
 When `channel_listener_service` receives an incoming message:
-1. `getChannelAgent(platform, channelId)` finds the bound agent
+1. `getChannelAgent(platform, channelId)` finds the bind agent
 2. If bound: loads agent config, uses its system prompt + LLM
 3. If unbound: falls back to default LLM
 

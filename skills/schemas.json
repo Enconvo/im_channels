@@ -20,7 +20,7 @@
   {
     "name": "configured_channels",
     "title": "configured_channels",
-    "description": "Returns all IM channel provider commands with configured status, enabled state, bound agent, and launch status",
+    "description": "Returns all IM channel provider commands with configured status, enabled state, bind agent, and launch status",
     "routePath": "im_channels/configured_channels",
     "parameters": {
       "type": "object",
@@ -47,6 +47,15 @@
         "bound_agent": {
           "type": "string",
           "description": "The agent command key to bind to this channel (e.g. \"chat_with_ai|chat_command\"). If provided, the channel's bound_agent preference will be set automatically."
+        },
+        "botToken": {
+          "type": "string",
+          "description": "The bot token for the platform (e.g. Discord Bot Token, Telegram Bot API Token). Will be set as the botToken preference on the new channel."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether to enable real-time message listening for this channel",
+          "default": false
         }
       },
       "required": [

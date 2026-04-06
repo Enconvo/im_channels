@@ -1,7 +1,7 @@
 ---
 name: im_channels
 description: >
-  IM channel integration for Telegram and Discord with platform-specific tools and persistent channel listeners.
+  IM channel integration for Telegram and Discord. Each channel is essentially a bot on the IM platform that can interact with an Enconvo agent — when a message arrives, the bind agent automatically processes and replies. One agent can serve multiple channels, but each channel is bound to exactly one agent.
 metadata:
   author: ysnows
   version: "0.0.8"
@@ -20,7 +20,7 @@ Detailed setup guides with step-by-step instructions live in `references/`:
 | File | Content |
 |------|---------|
 | `references/discord.md` | Discord bot creation, token, intents, invite URL, channel IDs, validation, Browser Control steps |
-| `references/telegram.md` | Telegram BotFather setup, chat IDs, validation |
+| `references/telegram.md` | Telegram BotFather setup (manual + automated via BotFather CLI), Browser Control for API credentials, chat IDs, validation |
 
 Read the relevant reference file when guiding the user through a specific platform.
 
@@ -58,8 +58,67 @@ If no subcommand is clear, default to `setup`.
 **User flow:**
 1. Create a bot on the platform (Discord Developer Portal / Telegram BotFather)
 2. Open **Enconvo Settings > IM Channels** → add a channel for the platform
-3. Paste bot token, select a bound agent, toggle Enabled
-4. The bound agent automatically gets reply/react/fetch tools injected
+3. Paste bot token, select a bind agent, toggle Enabled
+4. The bind agent automatically gets reply/react/fetch tools injected
+
+## Configuring IM Channel Providers via Config API
+
+Each channel's credentials and settings can also be configured programmatically via the `config/set` API (from the `config` module).
+
+**Available IM channel providers:**
+
+| Provider | Command Key | Required Credential |
+|----------|-------------|-------------------|
+| Discord | `im_channels\|discord` | `botToken` — Bot Token from Discord Developer Portal |
+| Telegram | `im_channels\|telegram` | `botToken` — Bot API Token from @BotFather |
+
+**1. Set bot token for a provider:**
+
+```json
+POST config/set
+{ "preferenceKey": "im_channels|discord", "keys": ["botToken"], "value": "your-discord-bot-token" }
+```
+
+```json
+POST config/set
+{ "preferenceKey": "im_channels|telegram", "keys": ["botToken"], "value": "123456:ABC-DEF..." }
+```
+
+**2. Enable the channel listener (so it receives incoming messages):**
+
+```json
+POST config/set
+{ "preferenceKey": "im_channels|telegram", "keys": ["enabled"], "value": true }
+```
+
+**3. Bind an agent to a channel (incoming messages go to this agent):**
+
+```json
+POST config/set
+{ "preferenceKey": "im_channels|discord", "keys": ["bound_agent"], "value": "agent|main" }
+```
+
+Each provider's preferences:
+- `botToken` (password, required) — the platform bot token
+- `enabled` (checkbox) — enable/disable the real-time message listener
+- `bound_agent` (dropdown) — which Enconvo agent handles incoming messages
+
+**Creating a new channel with all settings in one call:**
+
+Use `im_channels/create_channel` to duplicate a base provider and set credentials + binding in one step:
+
+```json
+POST im_channels/create_channel
+{
+  "platform": "telegram",
+  "title": "Sensei English Bot",
+  "botToken": "123456:ABC-DEF...",
+  "enabled": true,
+  "bound_agent": "agent|main"
+}
+```
+
+This creates a new channel command (e.g. `im_channels|telegram_2`), sets the bot token, enables the listener, and binds it to the specified agent — all at once.
 
 ## API Reference
 
@@ -68,8 +127,8 @@ Just use the `local_api` tool to request these APIs.
 | Endpoint | Description |
 |----------|-------------|
 | `im_channels/check_connection` | Check if a channel's credentials are valid by calling the platform API. Params: `channel_provider` (string, required) |
-| `im_channels/configured_channels` | Returns all IM channel provider commands with configured status, enabled state, bound agent, and launch status. _No params_ |
-| `im_channels/create_channel` | Create a new channel by duplicating the base provider command for a platform. Params: `platform` (string, required), `title` (string), `bound_agent` (string) |
+| `im_channels/configured_channels` | Returns all IM channel provider commands with configured status, enabled state, bind agent, and launch status. _No params_ |
+| `im_channels/create_channel` | Create a new channel by duplicating the base provider command for a platform. _5 params — use `check_local_api_schemas` tool_ |
 | `im_channels/launch_channel` | Launch a channel listener for a provider, reading config from preferences or using credential overrides. _7 params — use `check_local_api_schemas` tool_ |
 | `im_channels/launched_channels` | List all currently active channel connections from shared state. _No params_ |
 | `im_channels/restore_channels` | Restore all enabled channels, called on app startup or manually. _No params_ |
@@ -89,26 +148,75 @@ Just use the `local_api` tool to request these APIs.
 
 ## Browser Control Integration
 
-Before guiding manual steps, check if the `browser_control` extension is installed. If it is, you can automate the Discord Developer Portal workflow.
+Before guiding manual steps, check if Browser Control is ready. Use `browser_control/status` to verify — it returns connection state directly.
 
-**How to check:**
-```
-local_api enconvo/get_extension_info {"extension_name": "browser_control"}
-```
+- **If connected:** Browser Control is available. Proceed with automation.
+- **If unavailable:** The user needs to install the **Enconvo Companion** Chrome extension. Offer to help them install it, or fall back to manual steps.
 
-If the extension exists (response has `commands`), Browser Control is available. Use its tools to automate browser interactions:
+Available Browser Control tools:
 
 | Tool | Purpose |
 |------|---------|
+| `browser_control/status` | Check if Browser Control is connected |
 | `browser_control/navigate` | Open a URL |
-| `browser_control/click` | Click a button/element |
-| `browser_control/fill` | Fill a text field |
+| `browser_control/snapshot` | **Use before every interaction** — returns page DOM tree with element refs for click/fill targeting |
+| `browser_control/click` | Click an element (use ref from snapshot) |
+| `browser_control/fill` | Fill a text field (use ref from snapshot) |
 | `browser_control/get_text` | Read text from page |
-| `browser_control/screenshot` | Take a screenshot to verify state |
-| `browser_control/snapshot` | Get page DOM snapshot |
+| `browser_control/screenshot` | Take a visual screenshot |
 | `browser_control/wait_for` | Wait for element to appear |
 
-Each reference file includes `### Browser Control automation` sections with the element targets for each step.
+**Pattern:** Always call `snapshot` first to get the DOM tree → find element refs → then `click`/`fill` using those refs. Use `screenshot` as a visual aid to verify page state or show the user what's on screen.
+
+## BotFather CLI (Telegram Bot Management)
+
+The BotFather CLI (`SKILL_DIR/scripts/botfather.py`) automates Telegram bot management via the Telethon user client. It sends messages to @BotFather as the authenticated user and parses responses.
+
+**Prerequisites:** Telegram API credentials (`api_id` + `api_hash`) and an authenticated Telethon session. See the setup flow in `create telegram` or `references/telegram.md`.
+
+**Quick Reference:**
+
+| Want to... | Command |
+|---|---|
+| Check auth status | `botfather.py status` |
+| List all bots | `botfather.py list` |
+| Create a bot | `botfather.py create "Display Name" "username_bot"` |
+| Delete a bot | `botfather.py delete @mybot` |
+| Get bot token | `botfather.py token @mybot` |
+| Revoke bot token | `botfather.py token @mybot --revoke` |
+| Set bot name | `botfather.py set name @mybot "New Name"` |
+| Set bot description | `botfather.py set description @mybot "New description"` |
+| Set bot about | `botfather.py set about @mybot "About text"` |
+| Set bot commands | `botfather.py set commands @mybot "cmd1 - Desc 1\ncmd2 - Desc 2"` |
+| Set bot photo | `botfather.py set userpic @mybot /path/to/photo.jpg` |
+| Toggle inline mode | `botfather.py set inline @mybot "Enable"` or `"Disable"` |
+| Toggle group joining | `botfather.py set joingroups @mybot "Enable"` or `"Disable"` |
+| Toggle privacy | `botfather.py set privacy @mybot "Enable"` or `"Disable"` |
+| Get bot info | `botfather.py info @mybot` |
+| Send raw command | `botfather.py send "/mybots"` |
+
+All commands support `--json` for machine-readable output.
+
+**Full path:** `SKILL_DIR/scripts/botfather.py`
+
+**File layout:**
+```
+SKILL_DIR/scripts/
+  botfather.py              # Python CLI (Telethon + argparse)
+
+~/.botfather/
+  config.json               # api_id, api_hash
+  session.session            # Telethon session (auto-created)
+```
+
+Run via Bash tool: `python3 SKILL_DIR/scripts/botfather.py <subcommand> [args]`
+(Enconvo handles the venv and `telethon` dependency — no shell wrapper needed.)
+
+**Important notes:**
+- Telethon auth is always interactive — needs terminal input for phone + 2FA code. Cannot be automated.
+- Browser Control only automates getting API credentials from my.telegram.org — Telethon auth still needs terminal.
+- Bot usernames in commands should include the `@` prefix (e.g., `@mybot`).
+- Token output is sensitive — always mask in user-facing output.
 
 ---
 
@@ -120,15 +228,64 @@ Each reference file includes `### Browser Control automation` sections with the 
 
 The goal is to walk the user through creating a new bot on the platform AND connecting it to Enconvo — end to end.
 
-#### Step 0 — Detect Browser Control
-
-Check if `browser_control` is installed:
-- **If YES**: Tell the user you can automate most of the setup. Ask if they want automated or manual guidance.
-- **If NO**: Tell the user you'll provide step-by-step instructions. Suggest installing Browser Control for a more automated experience next time.
-
 #### Step 1 — Create the bot on the platform
 
 Read the relevant `references/<platform>.md` file for the full workflow.
+
+**Telegram — use BotFather CLI (preferred):**
+
+Always prefer the BotFather CLI. It creates bots, gets tokens, and configures settings fully automatically.
+
+**Step T1 — Check BotFather CLI status:**
+
+Run `python3 SKILL_DIR/scripts/botfather.py status`
+
+- **If authenticated:** Skip to Step T3 (create the bot).
+- **If not configured:** Proceed to Step T2 (one-time setup).
+
+**Step T2 — BotFather CLI Setup (one-time):**
+
+The CLI needs Telegram API credentials (`api_id` + `api_hash`) from https://my.telegram.org.
+
+Check `browser_control/status` to decide how to obtain them:
+
+- **Browser Control available →** automate credential retrieval (always `snapshot` before interacting):
+  1. `browser_control/navigate` → `https://my.telegram.org/auth`
+  2. `browser_control/snapshot` + `browser_control/screenshot` — inspect login page, show user
+  3. Tell the user: "Please enter your phone number and complete login. Let me know when done."
+  4. Once user confirms login, **proceed automatically** — no further prompts:
+  5. `browser_control/snapshot` — verify login, identify page elements
+  6. `browser_control/click` → "API development tools" link (use ref from snapshot)
+  7. `browser_control/snapshot` — check if app exists or needs creation
+  8. If no app: automatically create — `browser_control/fill` fields (title: `BotFather CLI`, short name: `botfather_cli`, platform: `Desktop`) → `browser_control/click` "Create application"
+  9. `browser_control/snapshot` → verify creation succeeded and extract `api_id` and `api_hash`
+  10. **If creation fails:** Tell the user to create the app manually at https://my.telegram.org, then provide `api_id` and `api_hash`
+  11. `browser_control/screenshot` — show user the result
+  11. Save creds: `python3 SKILL_DIR/scripts/botfather.py save-creds --api-id <ID> --api-hash <HASH> --skip-auth`
+  12. Run Telethon auth (interactive terminal — user must type phone + code): `python3 SKILL_DIR/scripts/botfather.py auth`
+
+- **Browser Control unavailable →** tell the user they can install the **Enconvo Companion** Chrome extension for automated setup, or proceed manually:
+  Run `python3 SKILL_DIR/scripts/botfather.py setup` (interactive — guides the user through visiting my.telegram.org and typing credentials)
+
+**After setup, the CLI persists the session** — no re-auth needed for future bot operations.
+
+**Step T3 — Create the bot:**
+
+```bash
+python3 SKILL_DIR/scripts/botfather.py create "Bot Display Name" "bot_username_bot" --json
+```
+
+**Step T4 — Get the token:**
+
+```bash
+python3 SKILL_DIR/scripts/botfather.py token @bot_username_bot --json
+```
+
+Parse the token from the JSON output.
+
+**Discord:**
+
+Check `browser_control/status` first.
 
 **Discord (automated with Browser Control):**
 1. Navigate to `https://discord.com/developers/applications`
@@ -143,13 +300,6 @@ Read the relevant `references/<platform>.md` file for the full workflow.
 **Discord (manual — no Browser Control):**
 Provide the step-by-step instructions from `references/discord.md`. Format them clearly with numbered steps. Offer to validate the token once the user has it.
 
-**Telegram (always interactive):**
-Telegram bots are created via @BotFather in the Telegram app — no browser automation needed.
-1. Tell the user to open Telegram and message `@BotFather`
-2. Send `/newbot`, choose a name and username
-3. Copy the token BotFather provides
-4. Provide the instructions from `references/telegram.md`
-
 #### Step 2 — Create the channel in Enconvo
 
 Once the user has the bot token:
@@ -157,7 +307,7 @@ Once the user has the bot token:
 1. Call `local_api im_channels/create_channel {"platform": "<discord|telegram>"}` to create a new channel instance
 2. Tell the user to open **Enconvo Settings > IM Channels**
 3. They should see the new channel — paste the bot token there
-4. Select a bound agent
+4. Select a bind agent
 5. Toggle Enabled
 
 Or if you have the token directly, you can launch it:
@@ -182,7 +332,7 @@ Suggest the user send a test message to the bot:
 - **Discord**: Send a message in the server channel where the bot is present
 - **Telegram**: Send a message directly to the bot
 
-The bound agent should respond automatically.
+The bind agent should respond automatically.
 
 ### `setup`
 
@@ -213,7 +363,7 @@ After the user has entered credentials, offer to validate them using `im_channel
 **Step 4 — Confirm setup**
 
 Tell the user:
-> Your channel is configured! The bound agent will now respond to messages from this channel automatically. Send a test message to verify everything works.
+> Your channel is configured! The bind agent will now respond to messages from this channel automatically. Send a test message to verify everything works.
 
 ### `status`
 
@@ -249,7 +399,7 @@ Show the detailed setup guide for the requested platform by reading the correspo
 ## Notes
 
 - Always mask secrets in output — show only last 4 characters
-- Channel tools (reply, react, fetch_messages, etc.) appear in the bound agent automatically when a channel is enabled
+- Channel tools (reply, react, fetch_messages, etc.) appear in the bind agent automatically when a channel is enabled
 - Each channel instance is identified by its `channel_provider` key (e.g., `"im_channels|discord"`, `"im_channels|discord_copy2"`)
 - Multiple instances of the same platform are supported (e.g., two Discord bots for different servers)
 - When Browser Control is available, prefer automation but always confirm with the user before clicking/filling sensitive fields

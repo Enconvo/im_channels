@@ -115,7 +115,7 @@ click → "Authorize" button
 2. Select the Discord channel (or click "Add New Channel" → Discord)
 3. Paste the **Bot Token** in the token field
 4. Optionally set a **Default Channel ID** (see below)
-5. Select a **Bound Agent** (the AI agent that will respond to messages)
+5. Select a **bind agent** (the AI agent that will respond to messages)
 6. Toggle **Enabled** to ON
 
 ### Option B: Via API
