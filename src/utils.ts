@@ -67,6 +67,54 @@ export function splitMessage(content: string, maxLen: number): string[] {
     return chunks;
 }
 
+/**
+ * Split text into chunks optimized for TTS streaming.
+ * The first `fastChunkCount` chunks are single sentences (for low latency),
+ * subsequent chunks are larger paragraphs.
+ * Short sentences are merged to meet `minLen`.
+ */
+export function splitTextForTTS(
+    text: string,
+    { minLen = 20, fastChunkCount = 2, laterMaxLen = 200 } = {}
+): string[] {
+    // Split into sentences on: period/exclamation/question (incl. Chinese), newlines
+    // Filter: must contain at least one word character (letters, digits, CJK, etc.)
+    const hasSubstance = (s: string) => /[\w\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7af\u0400-\u04ff]/u.test(s);
+    const sentences = text
+        .split(/(?<=[.!?。！？\n])\s*/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0 && hasSubstance(s));
+
+    if (sentences.length === 0) return text.trim() ? [text.trim()] : [];
+
+    const chunks: string[] = [];
+    let i = 0;
+
+    // First N chunks: one sentence each (merge short ones forward)
+    while (i < sentences.length && chunks.length < fastChunkCount) {
+        let chunk = sentences[i++];
+        while (chunk.length < minLen && i < sentences.length) {
+            chunk += " " + sentences[i++];
+        }
+        chunks.push(chunk);
+    }
+
+    // Remaining: merge into larger chunks
+    let buffer = "";
+    while (i < sentences.length) {
+        const sentence = sentences[i++];
+        if (buffer.length + sentence.length + 1 > laterMaxLen && buffer.length >= minLen) {
+            chunks.push(buffer);
+            buffer = sentence;
+        } else {
+            buffer = buffer ? buffer + " " + sentence : sentence;
+        }
+    }
+    if (buffer) chunks.push(buffer);
+
+    return chunks.filter(c => hasSubstance(c));
+}
+
 export function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }

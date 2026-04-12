@@ -1,4 +1,5 @@
-import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider } from "@enconvo/api";
+import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, RequestOptions, Runtime, TTSProvider } from "@enconvo/api";
+import { splitTextForTTS } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -238,51 +239,103 @@ class ChannelConnectionManager {
         return async (msg: IMChannelProvider.IncomingMessage) => {
             console.log(`[IM] ← Received: ${connection.channelProvider}/${msg.channelId} from ${msg.authorName}: ${msg.content.substring(0, 200)}`, msg);
 
-            console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey} (fire-and-forget)`);
+            const isAgentMode = await Runtime.isCommandAgentMode(connection.agentCommandKey)
+            console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey}, agentMode: ${isAgentMode}`);
 
-            // Fire-and-forget: don't await, let agent process independently
-            const headerParts = [
-                `channel_provider: ${connection.channelProvider}`,
-                `sender: ${msg.authorName}`,
-                `channel_id: ${msg.channelId}`,
-            ];
-            if (msg.userId) headerParts.push(`user_id: ${msg.userId}`);
-            // In DMs, skip message_id so agent sends a plain message instead of a reply
-            if (msg.messageId && !msg.isDM) headerParts.push(`message_id: ${msg.messageId}`);
-            if (msg.isDM != null) headerParts.push(`is_dm: ${msg.isDM}`);
-
-            const inputText = `[IM message from ${headerParts.join(", ")}]\n${msg.content}`;
-            const agentParams: any = {
+            const inputText = msg.content;
+            const agentParams: RequestOptions = {
                 agentId: connection.agentCommandKey,
-                input_text: inputText,
-                context_metadata: {
-                    source: "im_channel",
-                    channel_provider: connection.channelProvider,
-                    channel_id: msg.channelId,
-                    author: msg.authorName,
-                    user_id: msg.userId,
-                    message_id: msg.messageId,
-                    is_dm: msg.isDM,
-                },
+                invoke_source: connection.channelProvider,
+                context_items: [
+                    {
+                        source: "im_channel",
+                        type: "im_message",
+                        title: inputText?.slice(0, 10),
+                        content: inputText,
+                        channel_provider: connection.channelProvider,
+                        channel_id: msg.channelId,
+                        author: msg.authorName,
+                        status: 'content_loaded',
+                        user_id: msg.userId,
+                        message_id: msg.messageId,
+                        is_dm: msg.isDM,
+                    }
+                ],
             };
+
             // Pass attached files (voice, photo, document, etc.) to the agent
             if (msg.files && msg.files.length > 0) {
                 agentParams.context_files = msg.files;
             }
-            NativeAPI.localApi("agent/messages", agentParams).then((resp) => {
-                console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`);
-                // Stop typing in THIS Worker where the intervals live
-                if ((connection.provider as any).stopTyping) {
-                    (connection.provider as any).stopTyping(msg.channelId);
+
+            if (isAgentMode) {
+                // Agent mode: fire-and-forget — the agent will use IM tools to reply
+                NativeAPI.localApi("agent/messages", agentParams).then((resp) => {
+                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`);
+                    if ((connection.provider as any).stopTyping) {
+                        (connection.provider as any).stopTyping(msg.channelId);
+                    }
+                }).catch((err: any) => {
+                    console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                    if ((connection.provider as any).stopTyping) {
+                        (connection.provider as any).stopTyping(msg.channelId);
+                    }
+                });
+            } else {
+                // Non-agent (chat) mode: await response and send result back to IM
+                try {
+                    const resp = await NativeAPI.localApi("agent/messages", agentParams);
+
+                    const replyText = await this.extractResponseText(resp);
+                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status} replyText:${replyText}`);
+                    if (replyText) {
+                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: replyText }], { replyTo: msg.messageId });
+                        console.log(`[IM] → Sent text reply to ${connection.channelProvider}/${msg.channelId}`);
+
+                        // Stream TTS: split into sentence chunks, generate & send each as it's ready
+                        const tts = await TTSProvider.fromEnv();
+                        const ttsChunks = splitTextForTTS(replyText);
+                        if (ttsChunks.length > 0 && (connection.provider as any).startTyping) {
+                            (connection.provider as any).startTyping(msg.channelId);
+                        }
+                        for (const chunk of ttsChunks) {
+                            const ttsItem = await tts.toFile({ text: chunk });
+                            if (ttsItem.path) {
+                                await connection.provider.sendMessage(msg.channelId, [{ type: "voice", url: ttsItem.path }]);
+                            }
+                        }
+                        console.log(`[IM] → Sent ${ttsChunks.length} TTS voice chunk(s) to ${connection.channelProvider}/${msg.channelId}`);
+                    }
+                } catch (err: any) {
+                    console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                } finally {
+                    if ((connection.provider as any).stopTyping) {
+                        (connection.provider as any).stopTyping(msg.channelId);
+                    }
                 }
-            }).catch((err: any) => {
-                console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
-                // Stop typing on error too
-                if ((connection.provider as any).stopTyping) {
-                    (connection.provider as any).stopTyping(msg.channelId);
-                }
-            });
+            }
         };
+    }
+
+    private async extractResponseText(resp: Response): Promise<string | null> {
+        try {
+            const body = await resp.json();
+            if (typeof body === "string") return body;
+            if (body?.type === "text" && typeof body.content === "string") return body.content;
+            if (body?.type === "messages" && Array.isArray(body.messages)) {
+                const texts: string[] = [];
+                for (const message of body.messages) {
+                    const contents = Array.isArray(message.content) ? message.content : [];
+                    for (const c of contents) {
+                        if (c.type === "text" && c.text) texts.push(c.text);
+                    }
+                }
+                return texts.join("\n") || null;
+            }
+        } catch (err) {
+            console.error("[IM] Failed to parse agent response:", err);
+        }
+        return null;
     }
 
     private emitStatusEvent(info: { channelProvider: string; status: string; error?: string }): void {

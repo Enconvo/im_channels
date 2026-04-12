@@ -45,16 +45,10 @@ export class TelegramProvider extends IMChannelProvider {
                 }
                 messageCount += chunks.length;
             } else if (item.type === "voice") {
-                await withRetry(() => this.apiCall("sendVoice", {
-                    chat_id: channelId,
-                    voice: item.url,
-                }));
+                await withRetry(() => this.uploadFile(channelId, "sendVoice", "voice", item.url));
                 messageCount++;
             } else {
-                await withRetry(() => this.apiCall("sendDocument", {
-                    chat_id: channelId,
-                    document: item.url,
-                }));
+                await withRetry(() => this.uploadFile(channelId, "sendDocument", "document", item.url));
                 messageCount++;
             }
         }
@@ -303,6 +297,32 @@ export class TelegramProvider extends IMChannelProvider {
             this.botInfoCache = result.result;
         }
         return this.botInfoCache;
+    }
+
+    /** Upload a local file to Telegram via multipart/form-data */
+    private async uploadFile(chatId: string, method: string, fieldName: string, filePath: string): Promise<any> {
+        if (!this.botToken) throw new Error("Telegram bot token not configured.");
+
+        const fileBuffer = fs.readFileSync(filePath);
+        const fileName = path.basename(filePath);
+
+        const formData = new FormData();
+        formData.append("chat_id", chatId);
+        formData.append(fieldName, new Blob([fileBuffer]), fileName);
+
+        const response = await fetch(`${TELEGRAM_API}${this.botToken}/${method}`, {
+            method: "POST",
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const body = await response.text();
+            const error: any = new Error(`Telegram API error ${response.status}: ${body}`);
+            error.status = response.status;
+            throw error;
+        }
+
+        return response.json();
     }
 
     private async apiCall(method: string, params: Record<string, any>): Promise<any> {

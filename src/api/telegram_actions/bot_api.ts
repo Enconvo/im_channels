@@ -7,7 +7,7 @@ interface TelegramBotApiParams {
     channel_provider: string;
     /** The Telegram Bot API method name (e.g. "setMyName", "setMyProfilePhoto", "getMe"). See https://core.telegram.org/bots/api for all available methods. @required */
     method: string;
-    /** The parameters to pass to the API method as a JSON object. Each method has its own parameters — refer to the Telegram Bot API docs. For file upload fields, pass a local file path (starting with "/") and it will be uploaded automatically via multipart/form-data. */
+    /** The parameters to pass to the API method as a JSON object. Each method has its own parameters — refer to the Telegram Bot API docs. For file upload fields, pass a local file path (starting with "/") and it will be uploaded automatically via multipart/form-data. Note: Telegram Bot API limits file uploads to 50 MB max. If a file exceeds 50MB, try compressing it first; if still over 50MB, split it into smaller segments before sending. */
     params?: Record<string, any>;
 }
 
@@ -21,7 +21,7 @@ interface TelegramBotApiParams {
  * File upload: any value that is a local file path (starting with "/") or a URL (http/https)
  * inside params — at any nesting depth — will be automatically downloaded and uploaded via
  * multipart/form-data using Telegram's `attach://` syntax. This works for top-level fields
- * and nested InputFile fields (e.g. InputProfilePhoto).
+ * and nested InputFile fields (e.g. InputProfilePhoto). Max file size: 50 MB (Telegram Bot API limit).
  *
  * You can also use `local_api enconvo/upload_file {"filePath": "/path/to/file"}` to upload
  * a file first and get a hosted URL.

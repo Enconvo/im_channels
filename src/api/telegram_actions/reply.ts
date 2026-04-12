@@ -12,7 +12,7 @@ interface TelegramReplyParams {
     chat_id?: string;
     /** Message ID to reply to (creates native threading). Only use in group chats, not private chats. */
     reply_to?: string;
-    /** Absolute file paths to attach. Images (.jpg/.png/.gif/.webp) as photos; others as documents. Max 50MB each. */
+    /** Absolute file paths to attach. Images (.jpg/.png/.gif/.webp) as photos; others as documents. Max 50MB each. If a file exceeds 50MB, try compressing it first; if still over 50MB, split it into smaller segments before sending. */
     files?: string[];
 }
 
@@ -63,6 +63,8 @@ export default async function main(request: Request) {
             if (result?.result?.message_id) sentIds.push(result.result.message_id.toString());
         }
 
+        const fileErrors: Array<{ file: string; error: string }> = [];
+
         if (files && files.length > 0) {
             const imageExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 
@@ -77,25 +79,22 @@ export default async function main(request: Request) {
                     formData.append("chat_id", chat_id);
                     if (reply_to) formData.append("reply_to_message_id", reply_to);
 
-                    if (isImage) {
-                        formData.append("photo", new Blob([fileBuffer]), fileName);
-                        const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-                            method: "POST",
-                            body: formData,
-                        });
-                        const result = (await resp.json()) as any;
-                        if (result?.result?.message_id) sentIds.push(result.result.message_id.toString());
+                    const apiMethod = isImage ? "sendPhoto" : "sendDocument";
+                    formData.append(isImage ? "photo" : "document", new Blob([fileBuffer]), fileName);
+
+                    const resp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
+                        method: "POST",
+                        body: formData,
+                    });
+                    const result = (await resp.json()) as any;
+                    if (result?.ok && result?.result?.message_id) {
+                        sentIds.push(result.result.message_id.toString());
                     } else {
-                        formData.append("document", new Blob([fileBuffer]), fileName);
-                        const resp = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
-                            method: "POST",
-                            body: formData,
-                        });
-                        const result = (await resp.json()) as any;
-                        if (result?.result?.message_id) sentIds.push(result.result.message_id.toString());
+                        const errMsg = result?.description || `${apiMethod} failed with status ${resp.status}`;
+                        fileErrors.push({ file: filePath, error: errMsg });
                     }
                 } catch (e: any) {
-                    console.error(`[Telegram] Failed to send file ${filePath}:`, e.message);
+                    fileErrors.push({ file: filePath, error: e.message });
                 }
             }
         }
@@ -105,7 +104,11 @@ export default async function main(request: Request) {
             (connection.provider as any).stopTyping(chat_id);
         }
 
-        return Response.json({ success: true, message_ids: sentIds });
+        const result: any = { success: true, message_ids: sentIds };
+        if (fileErrors.length > 0) {
+            result.file_errors = fileErrors;
+        }
+        return Response.json(result);
     } catch (err: any) {
         return Response.json({ error: `Failed to send: ${err.message}` }, { status: 500 });
     }

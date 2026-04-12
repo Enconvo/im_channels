@@ -75,29 +75,18 @@
           "type": "string",
           "description": "The provider command key (e.g. \"im_channels|discord\")"
         },
-        "agent_command_key": {
+        "bound_agent": {
           "type": "string",
-          "description": "Override: agent command key to bind"
+          "description": "The agent command key to bind to this channel (e.g. \"chat_with_ai|chat_command\"). If provided, the channel's bound_agent preference will be set automatically."
         },
         "botToken": {
           "type": "string",
-          "description": "Override: bot token for authentication"
+          "description": "The bot token for the platform (e.g. Discord Bot Token, Telegram Bot API Token). Will be set as the botToken preference on the new channel."
         },
-        "appToken": {
-          "type": "string",
-          "description": "Override: app token (Slack Socket Mode)"
-        },
-        "appId": {
-          "type": "string",
-          "description": "Override: app ID (Feishu)"
-        },
-        "appSecret": {
-          "type": "string",
-          "description": "Override: app secret (Feishu)"
-        },
-        "domain": {
-          "type": "string",
-          "description": "Override: API domain (Feishu)"
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether to enable real-time message listening for this channel",
+          "default": false
         }
       },
       "required": [
@@ -373,7 +362,7 @@
     "routes": [
       {
         "name": "bot_api",
-        "description": "Call any Telegram Bot API method directly. The bot token is injected automatically — you only need to specify the method name and its parameters. This is a generic passthrough to the Telegram Bot API. Use it for any method not covered by the dedicated tools (reply, edit_message, react). File upload: any value that is a local file path (starting with \"/\") or a URL (http/https) inside params — at any nesting depth — will be automatically downloaded and uploaded via multipart/form-data using Telegram's `attach://` syntax. This works for top-level fields and nested InputFile fields (e.g. InputProfilePhoto). You can also use `local_api enconvo/upload_file {\"filePath\": \"/path/to/file\"}` to upload a file first and get a hosted URL. Common methods: - `getMe` — get bot info (username, id, etc.) - `setMyProfilePhoto` — set bot's own profile photo. Params: `{\"photo\": {\"type\": \"static\", \"photo\": \"/path/to/image.png\"}}` or `{\"photo\": {\"type\": \"static\", \"photo\": \"https://...\"}}` - `deleteMyProfilePhoto` — remove bot's profile photo - `setMyName` — change bot display name. Params: `{\"name\": \"New Name\"}` - `setMyDescription` — change bot description. Params: `{\"description\": \"text\"}` - `setMyShortDescription` — change bot short description shown in profile - `setChatPhoto` — set group chat photo (bot must be admin). Params: `{\"chat_id\": \"...\", \"photo\": \"/path/to/photo.png\"}` - `deleteChatPhoto` — remove group chat photo - `getChat` — get chat details. Params: `{\"chat_id\": \"...\"}` - `getChatMemberCount` — count members. Params: `{\"chat_id\": \"...\"}` - `getChatMember` — get a specific member's info. Params: `{\"chat_id\": \"...\", \"user_id\": 123}` - `banChatMember` / `unbanChatMember` — moderation - `pinChatMessage` / `unpinChatMessage` — pin/unpin messages - `setMyCommands` — set bot command menu. Params: `{\"commands\": [{\"command\": \"start\", \"description\": \"Start the bot\"}]}` - `deleteMyCommands` — remove bot command menu - `getMyCommands` — list current bot commands - `setChatMenuButton` — set bot menu button - `sendSticker` — send a sticker. Params: `{\"chat_id\": \"...\", \"sticker\": \"/path/to/sticker.webp\"}` - `createNewStickerSet` / `addStickerToSet` — sticker set management - `getCustomEmojiStickers` — get custom emoji stickers by IDs - `setMessageReaction` — react to a message (also available as dedicated `react` tool) - `forwardMessage` — forward a message. Params: `{\"chat_id\": \"...\", \"from_chat_id\": \"...\", \"message_id\": 123}` - `copyMessage` — copy a message without \"forwarded\" label - `exportChatInviteLink` — generate invite link for a group - `setChatTitle` / `setChatDescription` — change group title/description - `leaveChat` — make the bot leave a chat Full reference: https://core.telegram.org/bots/api",
+        "description": "Call any Telegram Bot API method directly. The bot token is injected automatically — you only need to specify the method name and its parameters. This is a generic passthrough to the Telegram Bot API. Use it for any method not covered by the dedicated tools (reply, edit_message, react). File upload: any value that is a local file path (starting with \"/\") or a URL (http/https) inside params — at any nesting depth — will be automatically downloaded and uploaded via multipart/form-data using Telegram's `attach://` syntax. This works for top-level fields and nested InputFile fields (e.g. InputProfilePhoto). Max file size: 50 MB (Telegram Bot API limit). You can also use `local_api enconvo/upload_file {\"filePath\": \"/path/to/file\"}` to upload a file first and get a hosted URL. Common methods: - `getMe` — get bot info (username, id, etc.) - `setMyProfilePhoto` — set bot's own profile photo. Params: `{\"photo\": {\"type\": \"static\", \"photo\": \"/path/to/image.png\"}}` or `{\"photo\": {\"type\": \"static\", \"photo\": \"https://...\"}}` - `deleteMyProfilePhoto` — remove bot's profile photo - `setMyName` — change bot display name. Params: `{\"name\": \"New Name\"}` - `setMyDescription` — change bot description. Params: `{\"description\": \"text\"}` - `setMyShortDescription` — change bot short description shown in profile - `setChatPhoto` — set group chat photo (bot must be admin). Params: `{\"chat_id\": \"...\", \"photo\": \"/path/to/photo.png\"}` - `deleteChatPhoto` — remove group chat photo - `getChat` — get chat details. Params: `{\"chat_id\": \"...\"}` - `getChatMemberCount` — count members. Params: `{\"chat_id\": \"...\"}` - `getChatMember` — get a specific member's info. Params: `{\"chat_id\": \"...\", \"user_id\": 123}` - `banChatMember` / `unbanChatMember` — moderation - `pinChatMessage` / `unpinChatMessage` — pin/unpin messages - `setMyCommands` — set bot command menu. Params: `{\"commands\": [{\"command\": \"start\", \"description\": \"Start the bot\"}]}` - `deleteMyCommands` — remove bot command menu - `getMyCommands` — list current bot commands - `setChatMenuButton` — set bot menu button - `sendSticker` — send a sticker. Params: `{\"chat_id\": \"...\", \"sticker\": \"/path/to/sticker.webp\"}` - `createNewStickerSet` / `addStickerToSet` — sticker set management - `getCustomEmojiStickers` — get custom emoji stickers by IDs - `setMessageReaction` — react to a message (also available as dedicated `react` tool) - `forwardMessage` — forward a message. Params: `{\"chat_id\": \"...\", \"from_chat_id\": \"...\", \"message_id\": 123}` - `copyMessage` — copy a message without \"forwarded\" label - `exportChatInviteLink` — generate invite link for a group - `setChatTitle` / `setChatDescription` — change group title/description - `leaveChat` — make the bot leave a chat Full reference: https://core.telegram.org/bots/api",
         "parameters": {
           "type": "object",
           "properties": {
@@ -387,7 +376,7 @@
             },
             "params": {
               "type": "object",
-              "description": "The parameters to pass to the API method as a JSON object. Each method has its own parameters — refer to the Telegram Bot API docs. For file upload fields, pass a local file path (starting with \"/\") and it will be uploaded automatically via multipart/form-data."
+              "description": "The parameters to pass to the API method as a JSON object. Each method has its own parameters — refer to the Telegram Bot API docs. For file upload fields, pass a local file path (starting with \"/\") and it will be uploaded automatically via multipart/form-data. Note: Telegram Bot API limits file uploads to 50 MB max. If a file exceeds 50MB, try compressing it first; if still over 50MB, split it into smaller segments before sending."
             }
           },
           "required": [
@@ -489,7 +478,7 @@
                 "type": "string",
                 "description": ""
               },
-              "description": "Absolute file paths to attach. Images (.jpg/.png/.gif/.webp) as photos; others as documents. Max 50MB each."
+              "description": "Absolute file paths to attach. Images (.jpg/.png/.gif/.webp) as photos; others as documents. Max 50MB each. If a file exceeds 50MB, try compressing it first; if still over 50MB, split it into smaller segments before sending."
             }
           },
           "required": [
