@@ -1,5 +1,6 @@
+import { CommandManageUtils, TTSProvider } from "@enconvo/api";
 import { ChannelConnectionManager } from "../../connection_manager.ts";
-import { splitMessage } from "../../utils.ts";
+import { splitMessage, splitTextForTTS } from "../../utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -83,6 +84,26 @@ export default async function main(request: Request) {
             }
             const result = await discordRest(connection, "POST", `/channels/${targetChannelId}/messages`, body);
             if (result?.id) sentIds.push(result.id);
+        }
+
+        // Generate and send TTS voice if auto_audio_play is enabled
+        const commandConfig = await CommandManageUtils.loadCommandConfig({ commandKey: connection.agentCommandKey, includes: ['auto_audio_play'] }) as any;
+        if (commandConfig?.['auto_audio_play'] === true) {
+            try {
+                const tts = await TTSProvider.fromEnv();
+                const ttsChunks = splitTextForTTS(text);
+                if (ttsChunks.length > 0 && (connection.provider as any).startTyping) {
+                    (connection.provider as any).startTyping(targetChannelId);
+                }
+                for (const chunk of ttsChunks) {
+                    const ttsItem = await tts.toFile({ text: chunk });
+                    if (ttsItem.path) {
+                        await connection.provider.sendMessage(targetChannelId, [{ type: "voice", url: ttsItem.path }]);
+                    }
+                }
+            } catch (e: any) {
+                console.error(`[Discord] TTS generation failed:`, e.message);
+            }
         }
 
         // Send local files as separate messages

@@ -56,7 +56,7 @@ export class DiscordProvider extends IMChannelProvider {
                 }
                 messageCount += chunks.length;
             } else {
-                await withRetry(() => this.restCall("POST", `/channels/${channelId}/messages`, { ...body, content: item.url }));
+                await withRetry(() => this.uploadFile(channelId, item.url, body));
                 messageCount++;
             }
         }
@@ -374,6 +374,35 @@ export class DiscordProvider extends IMChannelProvider {
         } catch (err: any) {
             console.error("Discord message forward error:", err);
         }
+    }
+
+    /** Upload a local file to a Discord channel via multipart/form-data */
+    private async uploadFile(channelId: string, filePath: string, extraPayload?: any): Promise<any> {
+        if (!this.botToken) throw new Error("Discord bot token not configured.");
+
+        const fileBuffer = fs.readFileSync(filePath);
+        const fileName = path.basename(filePath);
+
+        const formData = new FormData();
+        formData.append("file", new Blob([fileBuffer]), fileName);
+        if (extraPayload && Object.keys(extraPayload).length > 0) {
+            formData.append("payload_json", JSON.stringify(extraPayload));
+        }
+
+        const response = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+            method: "POST",
+            headers: { "Authorization": `Bot ${this.botToken}` },
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            const error: any = new Error(`Discord API error ${response.status}: ${text}`);
+            error.status = response.status;
+            throw error;
+        }
+
+        return response.json();
     }
 
     private async restCall(method: string, path: string, body?: any): Promise<any> {

@@ -45,6 +45,8 @@ const GLOBAL_KEY = "__im_channel_connection_manager__";
 class ChannelConnectionManager {
     private connections = new Map<string, ActiveConnection>();
     private shutdownRegistered = false;
+    /** Active agent request AbortControllers keyed by channelId */
+    private activeRequests = new Map<string, AbortController>();
 
     static shared(): ChannelConnectionManager {
         if (!(globalThis as any)[GLOBAL_KEY]) {
@@ -239,7 +241,22 @@ class ChannelConnectionManager {
         return async (msg: IMChannelProvider.IncomingMessage) => {
             console.log(`[IM] ← Received: ${connection.channelProvider}/${msg.channelId} from ${msg.authorName}: ${msg.content.substring(0, 200)}`, msg);
 
+            // Handle bot commands before forwarding to agent
+            const command = msg.content.trim().toLowerCase();
+            if (command === "/new" || command === "/newsession") {
+                await this.handleNewSessionCommand(connection, msg);
+                return;
+            }
+            if (command === "/stop") {
+                await this.handleStopCommand(connection, msg);
+                return;
+            }
+
             const isAgentMode = await Runtime.isCommandAgentMode(connection.agentCommandKey)
+
+            const commandConfig = await CommandManageUtils.loadCommandConfig({ commandKey: connection.agentCommandKey, includes: ['auto_audio_play'] })
+
+
             console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey}, agentMode: ${isAgentMode}`);
 
             const inputText = msg.content;
@@ -268,23 +285,35 @@ class ChannelConnectionManager {
                 agentParams.context_files = msg.files;
             }
 
+            // Create an AbortController so /stop can cancel this request
+            const abortController = new AbortController();
+            this.activeRequests.set(msg.channelId, abortController);
+
             if (isAgentMode) {
                 // Agent mode: fire-and-forget — the agent will use IM tools to reply
-                NativeAPI.localApi("agent/messages", agentParams).then((resp) => {
+                NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal }).then((resp) => {
                     console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`);
                     if ((connection.provider as any).stopTyping) {
                         (connection.provider as any).stopTyping(msg.channelId);
                     }
                 }).catch((err: any) => {
-                    console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                    if (abortController.signal.aborted) {
+                        console.log(`[IM] Agent request aborted: ${connection.agentCommandKey}/${msg.channelId}`);
+                    } else {
+                        console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                    }
                     if ((connection.provider as any).stopTyping) {
                         (connection.provider as any).stopTyping(msg.channelId);
                     }
+                }).finally(() => {
+                    this.activeRequests.delete(msg.channelId);
                 });
             } else {
                 // Non-agent (chat) mode: await response and send result back to IM
                 try {
-                    const resp = await NativeAPI.localApi("agent/messages", agentParams);
+                    const resp = await NativeAPI.localApi("agent/messages", agentParams, { abortController });
+
+                    if (abortController.signal.aborted) return;
 
                     const replyText = await this.extractResponseText(resp);
                     console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status} replyText:${replyText}`);
@@ -292,29 +321,71 @@ class ChannelConnectionManager {
                         await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: replyText }], { replyTo: msg.messageId });
                         console.log(`[IM] → Sent text reply to ${connection.channelProvider}/${msg.channelId}`);
 
-                        // Stream TTS: split into sentence chunks, generate & send each as it's ready
-                        const tts = await TTSProvider.fromEnv();
-                        const ttsChunks = splitTextForTTS(replyText);
-                        if (ttsChunks.length > 0 && (connection.provider as any).startTyping) {
-                            (connection.provider as any).startTyping(msg.channelId);
-                        }
-                        for (const chunk of ttsChunks) {
-                            const ttsItem = await tts.toFile({ text: chunk });
-                            if (ttsItem.path) {
-                                await connection.provider.sendMessage(msg.channelId, [{ type: "voice", url: ttsItem.path }]);
+                        if (commandConfig?.['auto_audio_play'] === true) {
+                            // Stream TTS: split into sentence chunks, generate & send each as it's ready
+                            const tts = await TTSProvider.fromEnv();
+                            const ttsChunks = splitTextForTTS(replyText);
+                            if (ttsChunks.length > 0 && (connection.provider as any).startTyping) {
+                                (connection.provider as any).startTyping(msg.channelId);
                             }
+                            for (const chunk of ttsChunks) {
+                                if (abortController.signal.aborted) break;
+                                const ttsItem = await tts.toFile({ text: chunk });
+                                if (ttsItem.path) {
+                                    await connection.provider.sendMessage(msg.channelId, [{ type: "voice", url: ttsItem.path }]);
+                                }
+                            }
+                            console.log(`[IM] → Sent ${ttsChunks.length} TTS voice chunk(s) to ${connection.channelProvider}/${msg.channelId}`);
                         }
-                        console.log(`[IM] → Sent ${ttsChunks.length} TTS voice chunk(s) to ${connection.channelProvider}/${msg.channelId}`);
                     }
                 } catch (err: any) {
-                    console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                    if (abortController.signal.aborted) {
+                        console.log(`[IM] Agent request aborted: ${connection.agentCommandKey}/${msg.channelId}`);
+                    } else {
+                        console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                    }
                 } finally {
+                    this.activeRequests.delete(msg.channelId);
                     if ((connection.provider as any).stopTyping) {
                         (connection.provider as any).stopTyping(msg.channelId);
                     }
                 }
             }
         };
+    }
+
+    private async handleNewSessionCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
+        try {
+            const resp = await NativeAPI.localApi("agent/new_session", {
+                agentId: connection.agentCommandKey,
+                invokeSource: connection.channelProvider
+            });
+            const session = await resp.json() as any;
+            if (session?.commandKey) {
+                console.log(`[IM] New session created: ${session.commandKey} for ${connection.channelProvider}/${msg.channelId}`);
+                await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "✅ New session started." }]);
+            } else {
+                await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "❌ Failed to create new session." }]);
+            }
+        } catch (err: any) {
+            console.error(`[IM] /new command failed:`, err.message);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
+        }
+    }
+
+    private async handleStopCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
+        const controller = this.activeRequests.get(msg.channelId);
+        if (controller) {
+            controller.abort();
+            this.activeRequests.delete(msg.channelId);
+            if ((connection.provider as any).stopTyping) {
+                (connection.provider as any).stopTyping(msg.channelId);
+            }
+            console.log(`[IM] /stop command: aborted active request for ${connection.channelProvider}/${msg.channelId}`);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "⏹ Stopped." }]);
+        } else {
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "No active request to stop." }]);
+        }
     }
 
     private async extractResponseText(resp: Response): Promise<string | null> {

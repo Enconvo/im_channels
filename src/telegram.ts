@@ -83,6 +83,7 @@ export class TelegramProvider extends IMChannelProvider {
         this.pollingActive = true;
         this.pollingAbort = new AbortController();
 
+        await this.ensureBotCommands();
         this.pollLoop(handler);
     }
 
@@ -297,6 +298,30 @@ export class TelegramProvider extends IMChannelProvider {
             this.botInfoCache = result.result;
         }
         return this.botInfoCache;
+    }
+
+    /** Ensure /new and /stop commands are registered with the Telegram bot */
+    private async ensureBotCommands(): Promise<void> {
+        const requiredCommands = [
+            { command: "new", description: "Start a new session" },
+            { command: "stop", description: "Stop the current response" },
+        ];
+
+        try {
+            const current = await this.apiCall("getMyCommands", {});
+            const existing = (current.ok && Array.isArray(current.result)) ? current.result as { command: string }[] : [];
+            const existingNames = new Set(existing.map((c: { command: string }) => c.command));
+
+            const missing = requiredCommands.filter(c => !existingNames.has(c.command));
+            if (missing.length === 0) return;
+
+            // Merge existing commands with missing ones
+            const merged = [...existing, ...missing];
+            await this.apiCall("setMyCommands", { commands: merged });
+            console.log(`[Telegram] Registered bot commands: ${missing.map(c => "/" + c.command).join(", ")}`);
+        } catch (err: any) {
+            console.error("[Telegram] Failed to register bot commands:", err.message);
+        }
     }
 
     /** Upload a local file to Telegram via multipart/form-data */
