@@ -1,5 +1,5 @@
 import { IMChannelProvider } from "@enconvo/api";
-import { withRetry, splitMessage, sleep, loadToolsFromSchema } from "./utils.ts";
+import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -26,10 +26,13 @@ export class DiscordProvider extends IMChannelProvider {
     private botUserId: string | null = null;
     private ws: WebSocket | null = null;
     private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+    private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
+    private lastHeartbeatAckAt: number = 0;
     private listenerActive = false;
     private pendingBatches = new Map<string, PendingBatch>();
     private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
     private lastSequence: number | null = null;
+    private reconnectAttempts = 0;
 
     constructor(options: IMChannelProvider.Options) {
         super(options);
@@ -83,6 +86,7 @@ export class DiscordProvider extends IMChannelProvider {
     async startListener(handler: IMChannelProvider.BotReplyHandler): Promise<void> {
         if (this.listenerActive) return;
         this.listenerActive = true;
+        this.reconnectAttempts = 0;
         this.connectGateway(handler);
     }
 
@@ -91,6 +95,10 @@ export class DiscordProvider extends IMChannelProvider {
         if (this.heartbeatInterval) {
             clearInterval(this.heartbeatInterval);
             this.heartbeatInterval = null;
+        }
+        if (this.heartbeatWatchdog) {
+            clearInterval(this.heartbeatWatchdog);
+            this.heartbeatWatchdog = null;
         }
         for (const batch of this.pendingBatches.values()) {
             clearTimeout(batch.timer);
@@ -101,7 +109,28 @@ export class DiscordProvider extends IMChannelProvider {
         }
         this.typingIntervals.clear();
         if (this.ws) {
-            this.ws.close();
+            try { this.ws.close(); } catch { }
+            this.ws = null;
+        }
+    }
+
+    /**
+     * Force a reconnect — closes the current WebSocket so the `connectGateway` loop
+     * will re-establish the connection. Safe to call on healthy or dead sockets.
+     */
+    async reconnect(): Promise<void> {
+        if (!this.listenerActive) return;
+        console.log("[Discord] Forcing gateway reconnect");
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
+        if (this.heartbeatWatchdog) {
+            clearInterval(this.heartbeatWatchdog);
+            this.heartbeatWatchdog = null;
+        }
+        if (this.ws) {
+            try { this.ws.close(); } catch { }
             this.ws = null;
         }
     }
@@ -199,8 +228,12 @@ export class DiscordProvider extends IMChannelProvider {
             } catch (err: any) {
                 if (this.listenerActive) {
                     console.error("Discord gateway error:", err);
-                    await sleep(5000);
                 }
+            }
+            if (this.listenerActive) {
+                const delay = backoffDelay(this.reconnectAttempts++);
+                console.log(`[Discord] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+                await sleep(delay);
             }
         }
     }
@@ -209,6 +242,7 @@ export class DiscordProvider extends IMChannelProvider {
         return new Promise((resolve) => {
             const ws = new WebSocket(DISCORD_GATEWAY);
             this.ws = ws;
+            this.lastHeartbeatAckAt = Date.now();
 
             ws.onmessage = (event) => {
                 try {
@@ -220,9 +254,20 @@ export class DiscordProvider extends IMChannelProvider {
                     switch (op) {
                         case 10: {
                             const interval = d.heartbeat_interval;
+                            this.lastHeartbeatAckAt = Date.now();
                             this.heartbeatInterval = setInterval(() => {
-                                ws.send(JSON.stringify({ op: 1, d: this.lastSequence }));
+                                try { ws.send(JSON.stringify({ op: 1, d: this.lastSequence })); } catch { }
                             }, interval);
+                            // Watchdog: if no ack within 2x the heartbeat interval, the connection is
+                            // likely a zombie (network change, sleep, etc.). Force close so the
+                            // connectGateway loop reconnects.
+                            if (this.heartbeatWatchdog) clearInterval(this.heartbeatWatchdog);
+                            this.heartbeatWatchdog = setInterval(() => {
+                                if (Date.now() - this.lastHeartbeatAckAt > interval * 2) {
+                                    console.warn(`[Discord] Heartbeat ack timeout (${Date.now() - this.lastHeartbeatAckAt}ms), forcing reconnect`);
+                                    try { ws.close(); } catch { }
+                                }
+                            }, Math.max(interval, 5000));
 
                             ws.send(JSON.stringify({
                                 op: 2,
@@ -241,6 +286,7 @@ export class DiscordProvider extends IMChannelProvider {
                         case 0: {
                             if (t === "READY") {
                                 this.botUserId = d.user?.id || null;
+                                this.reconnectAttempts = 0;
                             } else if (t === "MESSAGE_CREATE") {
                                 this.handleMessage(d, handler);
                             }
@@ -248,6 +294,11 @@ export class DiscordProvider extends IMChannelProvider {
                         }
                         case 1: {
                             ws.send(JSON.stringify({ op: 1, d: this.lastSequence }));
+                            break;
+                        }
+                        case 11: {
+                            // Heartbeat ACK
+                            this.lastHeartbeatAckAt = Date.now();
                             break;
                         }
                         case 7:
@@ -266,13 +317,17 @@ export class DiscordProvider extends IMChannelProvider {
                     clearInterval(this.heartbeatInterval);
                     this.heartbeatInterval = null;
                 }
+                if (this.heartbeatWatchdog) {
+                    clearInterval(this.heartbeatWatchdog);
+                    this.heartbeatWatchdog = null;
+                }
                 this.ws = null;
                 resolve();
             };
 
             ws.onerror = (err) => {
                 console.error("Discord WebSocket error:", err);
-                ws.close();
+                try { ws.close(); } catch { }
             };
         });
     }

@@ -1,4 +1,4 @@
-import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, RequestOptions, Runtime, TTSProvider } from "@enconvo/api";
+import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, RequestOptions, Runtime, TTSProvider, DictationProvider, PreferenceManageUtils } from "@enconvo/api";
 import { splitTextForTTS } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
@@ -237,18 +237,75 @@ class ChannelConnectionManager {
         console.log(`[IM] Restored ${this.connections.size} channel(s).`);
     }
 
+    /**
+     * Detect voice/audio attachments in an incoming message and transcribe them to English text.
+     * Returns the effective input text (transcript replaces `[Voice message]` placeholder, or is
+     * appended to any existing caption) along with the non-voice files that should still be passed
+     * to the agent as context.
+     */
+    private async transcribeVoiceFiles(
+        msg: IMChannelProvider.IncomingMessage,
+    ): Promise<{ inputText: string; remainingFiles: string[] }> {
+        const VOICE_EXTS = new Set([".ogg", ".oga", ".opus", ".mp3", ".wav", ".m4a", ".aac", ".webm"]);
+        const files = msg.files ?? [];
+        const voiceFiles = files.filter((f) => VOICE_EXTS.has(path.extname(f).toLowerCase()));
+        const remainingFiles = files.filter((f) => !VOICE_EXTS.has(path.extname(f).toLowerCase()));
+
+        if (voiceFiles.length === 0) {
+            return { inputText: msg.content, remainingFiles };
+        }
+
+        const dictationProvider = await DictationProvider.fromEnv();
+        const transcripts: string[] = [];
+        for (const audioFilePath of voiceFiles) {
+            try {
+                const result = await dictationProvider.audioToText({ audioFilePath });
+                if (result?.text?.trim()) transcripts.push(result.text.trim());
+                console.log(`[IM]   Transcribed voice: ${audioFilePath} → ${result?.text?.slice(0, 200)}`);
+            } catch (err: any) {
+                console.error(`[IM] ✗ Voice transcription failed for ${audioFilePath}:`, err.message);
+            }
+        }
+
+        const transcribed = transcripts.join("\n");
+        const caption = msg.content?.trim();
+        const isPlaceholder = !caption || caption === "[Voice message]" || caption === "[Video note]";
+        const inputText = transcribed
+            ? (isPlaceholder ? transcribed : `${caption}\n${transcribed}`)
+            : msg.content;
+
+        return { inputText, remainingFiles };
+    }
+
     private createHandler(connection: ActiveConnection): (msg: IMChannelProvider.IncomingMessage) => Promise<void> {
         return async (msg: IMChannelProvider.IncomingMessage) => {
             console.log(`[IM] ← Received: ${connection.channelProvider}/${msg.channelId} from ${msg.authorName}: ${msg.content.substring(0, 200)}`, msg);
 
-            // Handle bot commands before forwarding to agent
+            // Handle bot commands before forwarding to agent. These reply synchronously
+            // (no agent invocation) so we must stop any typing indicator the provider
+            // started on message arrival.
             const command = msg.content.trim().toLowerCase();
-            if (command === "/new" || command === "/newsession") {
-                await this.handleNewSessionCommand(connection, msg);
-                return;
-            }
-            if (command === "/stop") {
-                await this.handleStopCommand(connection, msg);
+            const isBotCommand =
+                command === "/new" || command === "/newsession" ||
+                command === "/stop" ||
+                command === "/voice" || command === "/togglevoice" || command === "/voicereply" ||
+                command === "/status";
+            if (isBotCommand) {
+                try {
+                    if (command === "/new" || command === "/newsession") {
+                        await this.handleNewSessionCommand(connection, msg);
+                    } else if (command === "/stop") {
+                        await this.handleStopCommand(connection, msg);
+                    } else if (command === "/voice" || command === "/togglevoice" || command === "/voicereply") {
+                        await this.handleToggleVoiceReplyCommand(connection, msg);
+                    } else if (command === "/status") {
+                        await this.handleStatusCommand(connection, msg);
+                    }
+                } finally {
+                    if ((connection.provider as any).stopTyping) {
+                        (connection.provider as any).stopTyping(msg.channelId);
+                    }
+                }
                 return;
             }
 
@@ -259,7 +316,7 @@ class ChannelConnectionManager {
 
             console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey}, agentMode: ${isAgentMode}`);
 
-            const inputText = msg.content;
+            const { inputText, remainingFiles } = await this.transcribeVoiceFiles(msg);
             const agentParams: RequestOptions = {
                 agentId: connection.agentCommandKey,
                 invoke_source: connection.channelProvider,
@@ -280,9 +337,9 @@ class ChannelConnectionManager {
                 ],
             };
 
-            // Pass attached files (voice, photo, document, etc.) to the agent
-            if (msg.files && msg.files.length > 0) {
-                agentParams.context_files = msg.files;
+            // Pass attached files (photo, document, etc.) to the agent — voice files were transcribed above
+            if (remainingFiles.length > 0) {
+                agentParams.context_files = remainingFiles;
             }
 
             // Create an AbortController so /stop can cancel this request
@@ -291,16 +348,27 @@ class ChannelConnectionManager {
 
             if (isAgentMode) {
                 // Agent mode: fire-and-forget — the agent will use IM tools to reply
-                NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal }).then((resp) => {
-                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`);
+                NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal }).then(async (resp) => {
+                    const json = await resp.json()
+                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`, json);
+
+                    // If the agent response contains only text content, it didn't use IM tools to reply — send it ourselves
+                    const textReply = this.extractTextOnlyReply(json);
+                    if (textReply) {
+                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: textReply }], { replyTo: msg.messageId });
+                        console.log(`[IM] → Sent text-only agent reply to ${connection.channelProvider}/${msg.channelId}`);
+                    }
+
                     if ((connection.provider as any).stopTyping) {
                         (connection.provider as any).stopTyping(msg.channelId);
                     }
-                }).catch((err: any) => {
+
+                }).catch(async (err: any) => {
                     if (abortController.signal.aborted) {
                         console.log(`[IM] Agent request aborted: ${connection.agentCommandKey}/${msg.channelId}`);
                     } else {
                         console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
                     }
                     if ((connection.provider as any).stopTyping) {
                         (connection.provider as any).stopTyping(msg.channelId);
@@ -343,6 +411,7 @@ class ChannelConnectionManager {
                         console.log(`[IM] Agent request aborted: ${connection.agentCommandKey}/${msg.channelId}`);
                     } else {
                         console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
+                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
                     }
                 } finally {
                     this.activeRequests.delete(msg.channelId);
@@ -386,6 +455,82 @@ class ChannelConnectionManager {
         } else {
             await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "No active request to stop." }]);
         }
+    }
+
+    /**
+     * Toggle the agent's `auto_audio_play` preference (TTS voice reply on/off).
+     * Persists via PreferenceManageUtils so the change survives across requests.
+     */
+    private async handleToggleVoiceReplyCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
+        try {
+            const config = await CommandManageUtils.loadCommandConfig({
+                commandKey: connection.agentCommandKey,
+                includes: ["auto_audio_play"],
+            });
+            const current = config?.["auto_audio_play"] === true;
+            const next = !current;
+            await PreferenceManageUtils.updatePreference({
+                keys: ["auto_audio_play"],
+                value: next,
+                preferenceKey: connection.agentCommandKey,
+            });
+            const status = next ? "🔊 Voice reply enabled" : "🔇 Voice reply disabled";
+            console.log(`[IM] /voice command: ${connection.agentCommandKey} auto_audio_play → ${next}`);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: status }]);
+        } catch (err: any) {
+            console.error(`[IM] /voice command failed:`, err.message);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
+        }
+    }
+
+    /**
+     * Show the current LLM provider + model configured on the bound agent.
+     */
+    private async handleStatusCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
+        try {
+            const config = await CommandManageUtils.loadCommandConfig({
+                commandKey: connection.agentCommandKey,
+                includes: ["llm", "auto_audio_play", 'title'],
+                useAsRunParams:true
+            }) as any;
+            const llm = config?.llm;
+            const providerTitle = llm?.title || llm?.commandName || "(not configured)";
+            const modelTitle = llm?.modelName?.title || llm?.modelName?.value || "(not configured)";
+            const voiceReply = config?.auto_audio_play === true ? "on" : "off";
+            const text = [
+                `🤖 Name: ${config.title}`,
+                `🤖 AgentId: ${connection.agentCommandKey}`,
+                `🧠 Provider: ${providerTitle}`,
+                `🎯 Model: ${modelTitle}`,
+                `🔊 Voice reply: ${voiceReply}`,
+            ].join("\n");
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text }]);
+        } catch (err: any) {
+            console.error(`[IM] /status command failed:`, err.message);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
+        }
+    }
+
+    /**
+     * If the agent response is `{ type: "messages", messages: [{ content: [...] }] }`
+     * and every content item is `type: "text"`, return the joined text.
+     * Otherwise return null (the agent used tools like IM reply to send the message itself).
+     */
+    private extractTextOnlyReply(json: any): string | null {
+        if (json?.type !== "messages" || !Array.isArray(json.messages)) return null;
+
+        const texts: string[] = [];
+        for (const message of json.messages) {
+            if (message.role !== "assistant") continue;
+            const contents = Array.isArray(message.content) ? message.content : [];
+            if (contents.length === 0) continue;
+            // If any content item is not text, the agent handled delivery itself
+            if (contents.some((c: any) => c.type !== "text")) return null;
+            for (const c of contents) {
+                if (c.text) texts.push(c.text);
+            }
+        }
+        return texts.length > 0 ? texts.join("\n") : null;
     }
 
     private async extractResponseText(resp: Response): Promise<string | null> {

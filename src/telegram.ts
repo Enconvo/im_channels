@@ -1,5 +1,5 @@
 import { IMChannelProvider } from "@enconvo/api";
-import { withRetry, splitMessage, sleep, loadToolsFromSchema } from "./utils.ts";
+import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -19,6 +19,8 @@ export class TelegramProvider extends IMChannelProvider {
     private pollingActive = false;
     private lastUpdateId = 0;
     private pollingAbort: AbortController | null = null;
+    private pollTimeoutAbort: AbortController | null = null;
+    private reconnectAttempts = 0;
     private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
     constructor(options: IMChannelProvider.Options) {
@@ -82,6 +84,7 @@ export class TelegramProvider extends IMChannelProvider {
         if (this.pollingActive) return;
         this.pollingActive = true;
         this.pollingAbort = new AbortController();
+        this.reconnectAttempts = 0;
 
         await this.ensureBotCommands();
         this.pollLoop(handler);
@@ -91,10 +94,21 @@ export class TelegramProvider extends IMChannelProvider {
         this.pollingActive = false;
         this.pollingAbort?.abort();
         this.pollingAbort = null;
+        this.pollTimeoutAbort?.abort();
+        this.pollTimeoutAbort = null;
         for (const interval of this.typingIntervals.values()) {
             clearInterval(interval);
         }
         this.typingIntervals.clear();
+    }
+
+    /**
+     * Force a reconnect — aborts the in-flight getUpdates so the poll loop restarts.
+     */
+    async reconnect(): Promise<void> {
+        if (!this.pollingActive) return;
+        console.log("[Telegram] Forcing poll restart");
+        this.pollTimeoutAbort?.abort();
     }
 
     async destroy(): Promise<void> {
@@ -146,11 +160,27 @@ export class TelegramProvider extends IMChannelProvider {
     private async pollLoop(handler: IMChannelProvider.BotReplyHandler): Promise<void> {
         while (this.pollingActive) {
             try {
-                const result = await this.apiCall("getUpdates", {
-                    offset: this.lastUpdateId + 1,
-                    timeout: 30,
-                    allowed_updates: ["message"],
-                });
+                // Per-call watchdog: long-polling server holds for 30s; if we don't
+                // hear back within 35s, the socket is likely a zombie (sleep/wake,
+                // network change). Abort so the loop reconnects.
+                const callAbort = new AbortController();
+                this.pollTimeoutAbort = callAbort;
+                const timeoutId = setTimeout(() => callAbort.abort(), 35000);
+
+                let result: any;
+                try {
+                    result = await this.apiCall("getUpdates", {
+                        offset: this.lastUpdateId + 1,
+                        timeout: 30,
+                        allowed_updates: ["message"],
+                    }, callAbort.signal);
+                } finally {
+                    clearTimeout(timeoutId);
+                    if (this.pollTimeoutAbort === callAbort) this.pollTimeoutAbort = null;
+                }
+
+                // Successful round-trip — reset backoff
+                this.reconnectAttempts = 0;
 
                 if (!result.ok || !result.result) {
                     await sleep(5000);
@@ -255,8 +285,16 @@ export class TelegramProvider extends IMChannelProvider {
                 }
             } catch (err: any) {
                 if (this.pollingActive) {
-                    console.error("Telegram polling error:", err);
-                    await sleep(5000);
+                    const aborted = err?.name === "AbortError";
+                    if (aborted) {
+                        // Global stop or explicit reconnect — exit immediately if stopped
+                        if (!this.pollingActive) break;
+                        console.warn("[Telegram] getUpdates aborted (timeout/reconnect), reconnecting");
+                    } else {
+                        console.error("Telegram polling error:", err);
+                    }
+                    const delay = backoffDelay(this.reconnectAttempts++);
+                    await sleep(delay);
                 }
             }
         }
@@ -300,11 +338,13 @@ export class TelegramProvider extends IMChannelProvider {
         return this.botInfoCache;
     }
 
-    /** Ensure /new and /stop commands are registered with the Telegram bot */
+    /** Ensure /new, /stop, /voice, /status commands are registered with the Telegram bot */
     private async ensureBotCommands(): Promise<void> {
         const requiredCommands = [
             { command: "new", description: "Start a new session" },
             { command: "stop", description: "Stop the current response" },
+            { command: "voice", description: "Toggle voice (TTS) reply on/off" },
+            { command: "status", description: "Show the status of current agent (provider, model, voice reply)" },
         ];
 
         try {
@@ -350,14 +390,19 @@ export class TelegramProvider extends IMChannelProvider {
         return response.json();
     }
 
-    private async apiCall(method: string, params: Record<string, any>): Promise<any> {
+    private async apiCall(method: string, params: Record<string, any>, signal?: AbortSignal): Promise<any> {
         if (!this.botToken) throw new Error("Telegram bot token not configured.");
+
+        // Merge caller signal with the global pollingAbort so either can cancel
+        const effectiveSignal = signal
+            ? anySignal([signal, this.pollingAbort?.signal])
+            : this.pollingAbort?.signal;
 
         const response = await fetch(`${TELEGRAM_API}${this.botToken}/${method}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(params),
-            signal: this.pollingAbort?.signal,
+            signal: effectiveSignal,
         });
 
         if (!response.ok) {
@@ -369,4 +414,18 @@ export class TelegramProvider extends IMChannelProvider {
 
         return response.json();
     }
+}
+
+/** Combine multiple AbortSignals — if any fires, the returned signal aborts. */
+function anySignal(signals: (AbortSignal | undefined)[]): AbortSignal {
+    const controller = new AbortController();
+    for (const sig of signals) {
+        if (!sig) continue;
+        if (sig.aborted) {
+            controller.abort();
+            break;
+        }
+        sig.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+    return controller.signal;
 }

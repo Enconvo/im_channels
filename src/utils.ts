@@ -119,6 +119,15 @@ export function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Exponential backoff schedule capped at 30s: 1s, 2s, 5s, 10s, 20s, 30s, 30s, ...
+ * `attempt` is 0-indexed (0 = first retry).
+ */
+export function backoffDelay(attempt: number): number {
+    const schedule = [1000, 2000, 5000, 10000, 20000, 30000];
+    return schedule[Math.min(attempt, schedule.length - 1)];
+}
+
 let _schemasCache: any[] | null = null;
 
 function loadSchemas(): any[] {
