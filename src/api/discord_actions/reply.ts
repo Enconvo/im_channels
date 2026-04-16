@@ -136,11 +136,6 @@ export default async function main(request: Request) {
             }
         }
 
-        // Stop typing indicator now that we've replied
-        if ((connection.provider as any).stopTyping) {
-            (connection.provider as any).stopTyping(targetChannelId);
-        }
-
         return Response.json({ success: true, message_ids: sentIds, channel_id: targetChannelId });
     } catch (err: any) {
         return Response.json({ error: `Failed to send: ${err.message}` }, { status: 500 });

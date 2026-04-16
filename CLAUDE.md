@@ -78,6 +78,53 @@ When `channel_listener_service` receives an incoming message:
 2. If bound: loads agent config, uses its system prompt + LLM
 3. If unbound: falls back to default LLM
 
+### Access Control (Pairing System)
+
+Managed via the `access` preference on each channel command (e.g. `im_channels|telegram`). Controls who can interact with the bot.
+
+**Data model** (stored as a single preference object):
+```json
+{
+  "policy": "pairing",
+  "allowList": [
+    { "userId": "123", "username": "alice", "firstName": "Alice", "chatId": "123", "approvedAt": 1713200000000 }
+  ],
+  "pending": [
+    { "code": "FSK7L2MA", "userId": "456", "username": "bob", "firstName": "Bob", "chatId": "456", "createdAt": 1713200000000 }
+  ]
+}
+```
+
+**Policies:**
+| Policy | Behavior |
+|--------|----------|
+| `pairing` | Unauthorized users get an 8-char pairing code; must be approved by admin |
+| `open` | Everyone can use the bot (no access control) |
+
+**Pairing flow:**
+1. Unauthorized user sends any message (including bot commands)
+2. `connection_manager.checkAccess()` generates an 8-char code, stores it in `pending`, replies:
+   ```
+   Enconvo: access not configured.
+   Your Telegram user id: 456
+   Pairing code: FSK7L2MA
+   Ask the bot owner to approve with:
+   enconvo im_channels pairing approve --channel telegram --code FSK7L2MA
+   ```
+3. Admin approves via:
+   - **API**: `POST im_channels/pairing/approve` with `{ channel: "telegram", code: "FSK7L2MA" }`
+   - **UI**: Enconvo Settings > channel preferences > Access Control section (Approve button)
+4. User is moved from `pending` to `allowList`; subsequent messages pass through to the agent
+
+**Key implementation details:**
+- Access check runs in `connection_manager.createHandler()` before bot commands and agent forwarding
+- On error, fails open (allows access) to avoid locking users out
+- `normalizeAccess()` handles missing/malformed data gracefully (defaults to `open`)
+- Pairing codes: 8 chars, charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no ambiguous I/O/0/1)
+- Preferences loaded via `CommandManageUtils.loadCommandConfig()`, saved via `PreferenceManageUtils.updatePreference()`
+
+**Frontend**: `SettingsItemAccessControl.tsx` in `enconvo_webapp` — renders policy dropdown, pending requests with Approve/Deny, allowed users with Remove (with confirmation dialog). Registered as preference type `access_control`.
+
 ### API Endpoints (auto-discovered from `src/api/`)
 
 | Endpoint | Method | Purpose |
@@ -91,6 +138,8 @@ When `channel_listener_service` receives an incoming message:
 | `agent_channels` | POST | Get all channels for an agent |
 | `channel_agent` | POST | Get agent for a channel |
 | `list_bindings` | GET | List all bindings |
+| `all_channels` | GET | List all available IM channel providers |
+| `pairing/approve` | POST | Approve a pending pairing code (`channel`, `code`) |
 
 ### Shared Utilities (`src/utils.ts`)
 

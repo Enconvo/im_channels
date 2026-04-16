@@ -122,11 +122,6 @@ export default async function main(request: Request) {
             }
         }
 
-        // Stop typing indicator now that we've replied
-        if ((connection.provider as any).stopTyping) {
-            (connection.provider as any).stopTyping(chat_id);
-        }
-
         const result: any = { success: true, message_ids: sentIds };
         if (fileErrors.length > 0) {
             result.file_errors = fileErrors;

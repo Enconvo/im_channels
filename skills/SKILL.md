@@ -4,7 +4,7 @@ description: >
   IM channel integration for Telegram and Discord. Each channel is essentially a bot on the IM platform that can interact with an Enconvo agent — when a message arrives, the bind agent automatically processes and replies. One agent can serve multiple channels, but each channel is bound to exactly one agent.
 metadata:
   author: ysnows
-  version: "0.0.15"
+  version: "0.0.21"
 ---
 
 # IM Channels — Setup & Management
@@ -102,6 +102,7 @@ Each provider's preferences:
 - `botToken` (password, required) — the platform bot token
 - `enabled` (checkbox) — enable/disable the real-time message listener
 - `bound_agent` (dropdown) — which Enconvo agent handles incoming messages
+- `access` (access_control) — who can use the bot (see Access Control below)
 
 **Creating a new channel with all settings in one call:**
 
@@ -120,12 +121,52 @@ POST im_channels/create_channel
 
 This creates a new channel command (e.g. `im_channels|telegram_2`), sets the bot token, enables the listener, and binds it to the specified agent — all at once.
 
+## Access Control (Pairing System)
+
+Each channel has an `access` preference that controls who can interact with the bot.
+
+**Policies:**
+- `pairing` (default) — unauthorized users receive an 8-character pairing code; the bot owner must approve before they can use the agent
+- `open` — everyone can use the bot with no restrictions
+
+**Pairing flow:**
+1. User sends any message to the bot
+2. Bot replies with a pairing code and instructions:
+   ```
+   Enconvo: access not configured.
+   Your Telegram user id: 123456
+   Pairing code: FSK7L2MA
+   Ask the bot owner to approve with:
+   enconvo im_channels pairing approve --channel telegram --code FSK7L2MA
+   ```
+3. Admin approves via one of:
+   - **API**: `local_api im_channels/pairing/approve {"channel": "telegram", "code": "FSK7L2MA"}`
+   - **Settings UI**: Enconvo Settings > channel > Access Control > Approve button
+4. User can now interact with the bot normally
+
+**Managing access via API:**
+
+Set the access policy:
+```json
+POST config/set
+{ "preferenceKey": "im_channels|telegram", "keys": ["access"], "value": { "policy": "open", "allowList": [], "pending": [] } }
+```
+
+Approve a pending pairing:
+```json
+POST im_channels/pairing/approve
+{ "channel": "telegram", "code": "FSK7L2MA" }
+```
+
+The `channel` parameter is the short name from `im_channels/all_channels` (e.g. `telegram`, `discord`).
+
 ## API Reference
 
 Just use the `local_api` tool to request these APIs.
 
 | Endpoint | Description |
 |----------|-------------|
+| `im_channels/all_channels` | List all available IM channel providers. _No params_ |
 | `im_channels/check_connection` | Check if a channel's credentials are valid by calling the platform API. Params: `channel_provider` (string, required) |
 | `im_channels/configured_channels` | Returns all IM channel provider commands with configured status, enabled state, bind agent, and launch status. _No params_ |
 | `im_channels/create_channel` | Create a new channel by duplicating the base provider command for a platform. _5 params — use `check_local_api_schemas` tool_ |
@@ -140,6 +181,7 @@ Just use the `local_api` tool to request these APIs.
 | `im_channels/discord_actions/fetch_messages` | Pull recent message history from a Discord channel sorted oldest-first. Params: `channel_provider` (string, required), `channel_id` (string, required), `limit` (number, default: 50) |
 | `im_channels/discord_actions/react` | Add an emoji reaction to a Discord message by ID. _4 params — use `check_local_api_schemas` tool_ |
 | `im_channels/discord_actions/reply` | Send a message to a Discord channel or DM with optional file attachments and threading. _6 params — use `check_local_api_schemas` tool_ |
+| `im_channels/pairing/approve` | Approve a pending pairing request to grant a user access to the bot. Params: `channel` (string, required), `code` (string, required) |
 | `im_channels/telegram_actions/bot_api` | Call any Telegram Bot API method directly. The bot token is injected automatically — you only need to specify the method name and its parameters. This is a generic passthrough to the Telegram Bot API. Use it for any method not covered by the dedicated tools (reply, edit_message, react). File upload: any value that is a local file path (starting with "/") or a URL (http/https) inside params — at any nesting depth — will be automatically downloaded and uploaded via multipart/form-data using Telegram's `attach://` syntax. This works for top-level fields and nested InputFile fields (e.g. InputProfilePhoto). Max file size: 50 MB (Telegram Bot API limit). You can also use `local_api enconvo/upload_file {"filePath": "/path/to/file"}` to upload a file first and get a hosted URL. Common methods: - `getMe` — get bot info (username, id, etc.) - `setMyProfilePhoto` — set bot's own profile photo. Params: `{"photo": {"type": "static", "photo": "/path/to/image.png"}}` or `{"photo": {"type": "static", "photo": "https://..."}}` - `deleteMyProfilePhoto` — remove bot's profile photo - `setMyName` — change bot display name. Params: `{"name": "New Name"}` - `setMyDescription` — change bot description. Params: `{"description": "text"}` - `setMyShortDescription` — change bot short description shown in profile - `setChatPhoto` — set group chat photo (bot must be admin). Params: `{"chat_id": "...", "photo": "/path/to/photo.png"}` - `deleteChatPhoto` — remove group chat photo - `getChat` — get chat details. Params: `{"chat_id": "..."}` - `getChatMemberCount` — count members. Params: `{"chat_id": "..."}` - `getChatMember` — get a specific member's info. Params: `{"chat_id": "...", "user_id": 123}` - `banChatMember` / `unbanChatMember` — moderation - `pinChatMessage` / `unpinChatMessage` — pin/unpin messages - `setMyCommands` — set bot command menu. Params: `{"commands": [{"command": "start", "description": "Start the bot"}]}` - `deleteMyCommands` — remove bot command menu - `getMyCommands` — list current bot commands - `setChatMenuButton` — set bot menu button - `sendSticker` — send a sticker. Params: `{"chat_id": "...", "sticker": "/path/to/sticker.webp"}` - `createNewStickerSet` / `addStickerToSet` — sticker set management - `getCustomEmojiStickers` — get custom emoji stickers by IDs - `setMessageReaction` — react to a message (also available as dedicated `react` tool) - `forwardMessage` — forward a message. Params: `{"chat_id": "...", "from_chat_id": "...", "message_id": 123}` - `copyMessage` — copy a message without "forwarded" label - `exportChatInviteLink` — generate invite link for a group - `setChatTitle` / `setChatDescription` — change group title/description - `leaveChat` — make the bot leave a chat Full reference: https://core.telegram.org/bots/api. Params: `channel_provider` (string, required), `method` (string, required), `params` (object) |
 | `im_channels/telegram_actions/edit_message` | Edit a message the bot previously sent in Telegram. _4 params — use `check_local_api_schemas` tool_ |
 | `im_channels/telegram_actions/react` | Add an emoji reaction to a Telegram message by ID. _4 params — use `check_local_api_schemas` tool_ |

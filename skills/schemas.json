@@ -1,5 +1,16 @@
 [
   {
+    "name": "all_channels",
+    "title": "all_channels",
+    "description": "List all available IM channel providers",
+    "routePath": "im_channels/all_channels",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
     "name": "check_connection",
     "title": "check_connection",
     "description": "Check if a channel's credentials are valid by calling the platform API",
@@ -352,6 +363,35 @@
           ]
         },
         "routePath": "im_channels/discord_actions/reply"
+      }
+    ]
+  },
+  {
+    "name": "pairing",
+    "title": "pairing",
+    "description": "Router for pairing",
+    "routes": [
+      {
+        "name": "approve",
+        "description": "Approve a pending pairing request to grant a user access to the bot",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "type": "string",
+              "description": "Channel name from all_channels list (e.g. \"telegram\", \"discord\")"
+            },
+            "code": {
+              "type": "string",
+              "description": "The 8-character pairing code"
+            }
+          },
+          "required": [
+            "channel",
+            "code"
+          ]
+        },
+        "routePath": "im_channels/pairing/approve"
       }
     ]
   },

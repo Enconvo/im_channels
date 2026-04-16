@@ -81,7 +81,9 @@ export class TelegramProvider extends IMChannelProvider {
     }
 
     async startListener(handler: IMChannelProvider.BotReplyHandler): Promise<void> {
-        if (this.pollingActive) return;
+        if (this.pollingActive) {
+            return
+        };
         this.pollingActive = true;
         this.pollingAbort = new AbortController();
         this.reconnectAttempts = 0;
@@ -178,7 +180,7 @@ export class TelegramProvider extends IMChannelProvider {
                     clearTimeout(timeoutId);
                     if (this.pollTimeoutAbort === callAbort) this.pollTimeoutAbort = null;
                 }
-
+                console.log('update', result)
                 // Successful round-trip — reset backoff
                 this.reconnectAttempts = 0;
 
@@ -195,14 +197,12 @@ export class TelegramProvider extends IMChannelProvider {
                     const botInfo = await this.getBotInfo();
                     const isPrivateChat = msg.chat.type === "private";
 
-                    // For text messages, check @mention in groups
-                    const hasText = !!msg.text;
-                    const isMentioned = hasText && botInfo?.username && msg.text.includes(`@${botInfo.username}`);
-                    // Accept: private chats always, group messages only when @mentioned
-                    const hasMedia = !!(msg.voice || msg.audio || msg.photo || msg.document || msg.sticker || msg.video_note);
+                    // Accept: private chats always, group messages only when @mentioned (in text or caption)
+                    const textOrCaption = msg.text || msg.caption || "";
+                    const isMentioned = botInfo?.username && textOrCaption.includes(`@${botInfo.username}`);
                     if (!isPrivateChat && !isMentioned) continue;
 
-                    let textContent = msg.text || msg.caption || "";
+                    let textContent = textOrCaption;
                     if (botInfo?.username) {
                         textContent = textContent.replace(new RegExp(`@${botInfo.username}`, "g"), "").trim();
                     }
@@ -338,17 +338,19 @@ export class TelegramProvider extends IMChannelProvider {
         return this.botInfoCache;
     }
 
-    /** Ensure /new, /stop, /voice, /status commands are registered with the Telegram bot */
+    /** Ensure /new, /stop, /audio, /status commands are registered with the Telegram bot */
     private async ensureBotCommands(): Promise<void> {
         const requiredCommands = [
             { command: "new", description: "Start a new session" },
             { command: "stop", description: "Stop the current response" },
-            { command: "voice", description: "Toggle voice (TTS) reply on/off" },
-            { command: "status", description: "Show the status of current agent (provider, model, voice reply)" },
+            { command: "audio", description: "Toggle audio (TTS) reply on/off" },
+            { command: "status", description: "Show the status of current agent (provider, model, audio reply)" },
         ];
 
         try {
+            console.log('ensureBotCommands', this.pollingActive)
             const current = await this.apiCall("getMyCommands", {});
+            console.log('ensureBotCommands 2', current)
             const existing = (current.ok && Array.isArray(current.result)) ? current.result as { command: string }[] : [];
             const existingNames = new Set(existing.map((c: { command: string }) => c.command));
 

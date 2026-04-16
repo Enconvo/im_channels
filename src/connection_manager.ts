@@ -32,6 +32,32 @@ interface ProviderConfig {
     [key: string]: any;
 }
 
+interface AccessControl {
+    policy: "pairing" | "open";
+    allowList: { userId: string; username?: string; firstName?: string; chatId: string; approvedAt: number }[];
+    pending: { code: string; userId: string; username?: string; firstName?: string; chatId: string; createdAt: number }[];
+}
+
+const DEFAULT_ACCESS: AccessControl = { policy: "open", allowList: [], pending: [] };
+
+function generatePairingCode(): string {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let code = "";
+    for (let i = 0; i < 8; i++) {
+        code += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return code;
+}
+
+function normalizeAccess(val: any): AccessControl {
+    if (!val || Array.isArray(val) || typeof val !== "object") return { ...DEFAULT_ACCESS };
+    return {
+        policy: val.policy === "pairing" ? "pairing" : "open",
+        allowList: Array.isArray(val.allowList) ? val.allowList : [],
+        pending: Array.isArray(val.pending) ? val.pending : [],
+    };
+}
+
 const STATE_DIR = path.join(os.homedir(), ".config", "enconvo", "im_channels");
 const STATE_FILE = path.join(STATE_DIR, "active_connections.json");
 
@@ -281,24 +307,34 @@ class ChannelConnectionManager {
         return async (msg: IMChannelProvider.IncomingMessage) => {
             console.log(`[IM] ← Received: ${connection.channelProvider}/${msg.channelId} from ${msg.authorName}: ${msg.content.substring(0, 200)}`, msg);
 
+            // Access control gate — unapproved users get a pairing code instead of agent access.
+            // All messages (including bot commands) require authorization first.
+            const allowed = await this.checkAccess(connection, msg);
+            if (!allowed) {
+                if ((connection.provider as any).stopTyping) {
+                    (connection.provider as any).stopTyping(msg.channelId);
+                }
+                return;
+            }
+
             // Handle bot commands before forwarding to agent. These reply synchronously
             // (no agent invocation) so we must stop any typing indicator the provider
             // started on message arrival.
-            const command = msg.content.trim().toLowerCase();
+            const [cmdName, ...cmdArgs] = msg.content.trim().toLowerCase().split(/\s+/);
             const isBotCommand =
-                command === "/new" || command === "/newsession" ||
-                command === "/stop" ||
-                command === "/voice" || command === "/togglevoice" || command === "/voicereply" ||
-                command === "/status";
+                cmdName === "/new" || cmdName === "/newsession" ||
+                cmdName === "/stop" ||
+                cmdName === "/audio" ||
+                cmdName === "/status";
             if (isBotCommand) {
                 try {
-                    if (command === "/new" || command === "/newsession") {
+                    if (cmdName === "/new" || cmdName === "/newsession") {
                         await this.handleNewSessionCommand(connection, msg);
-                    } else if (command === "/stop") {
+                    } else if (cmdName === "/stop") {
                         await this.handleStopCommand(connection, msg);
-                    } else if (command === "/voice" || command === "/togglevoice" || command === "/voicereply") {
-                        await this.handleToggleVoiceReplyCommand(connection, msg);
-                    } else if (command === "/status") {
+                    } else if (cmdName === "/audio") {
+                        await this.handleToggleAudioCommand(connection, msg, cmdArgs[0]);
+                    } else if (cmdName === "/status") {
                         await this.handleStatusCommand(connection, msg);
                     }
                 } finally {
@@ -319,7 +355,7 @@ class ChannelConnectionManager {
             const { inputText, remainingFiles } = await this.transcribeVoiceFiles(msg);
             const agentParams: RequestOptions = {
                 agentId: connection.agentCommandKey,
-                invoke_source: connection.channelProvider,
+                invoke_source: `${connection.channelProvider}-${msg.channelId}`,
                 context_items: [
                     {
                         source: "im_channel",
@@ -423,15 +459,78 @@ class ChannelConnectionManager {
         };
     }
 
+    private async checkAccess(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<boolean> {
+        try {
+            const config = await CommandManageUtils.loadCommandConfig({
+                commandKey: connection.channelProvider,
+                includes: ["access"],
+            });
+            const access = normalizeAccess(config?.access);
+            if (access.policy === "open") return true;
+
+            const userId = msg.userId;
+            if (!userId) return false;
+
+            if (access.allowList.some(e => e.userId === userId)) return true;
+
+            if (access.pending.some(e => e.userId === userId)) {
+                await connection.provider.sendMessage(msg.channelId, [
+                    { type: "text", text: "⏳ Your access request is pending approval." },
+                ]);
+                return false;
+            }
+
+            const code = generatePairingCode();
+            access.pending.push({
+                code,
+                userId,
+                username: msg.authorName,
+                firstName: msg.authorName,
+                chatId: msg.channelId,
+                createdAt: Date.now(),
+            });
+
+            await PreferenceManageUtils.updatePreference({
+                keys: ["access"],
+                value: access,
+                preferenceKey: connection.channelProvider,
+            });
+
+            const channelName = connection.channelProvider.split("|").pop() || "unknown";
+            const platformLabel = channelName.replace("_channel", "");
+            const platformTitle = platformLabel.charAt(0).toUpperCase() + platformLabel.slice(1);
+            console.log(`[IM] Access: generated pairing code ${code} for user ${userId} (${msg.authorName})`);
+            const pairingMsg = [
+                `Enconvo: access not configured.`,
+                ``,
+                `Your ${platformTitle} user id: ${userId}`,
+                `Pairing code:`,
+                ``,
+                `\`\`\`${code}\`\`\``,
+                ``,
+                `Ask the bot owner to approve with:`,
+                ``,
+                `\`\`\`copy\nenconvo im_channels pairing approve --channel ${channelName} --code ${code}\n\`\`\``,
+            ].join("\n");
+            await connection.provider.sendMessage(msg.channelId, [
+                { type: "text", text: pairingMsg },
+            ]);
+            return false;
+        } catch (err: any) {
+            console.error("[IM] Access check failed:", err.message);
+            return true;
+        }
+    }
+
     private async handleNewSessionCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
         try {
             const resp = await NativeAPI.localApi("agent/new_session", {
                 agentId: connection.agentCommandKey,
-                invokeSource: connection.channelProvider
+                invokeSource: `${connection.channelProvider}-${msg.channelId}`
             });
             const session = await resp.json() as any;
             if (session?.commandKey) {
-                console.log(`[IM] New session created: ${session.commandKey} for ${connection.channelProvider}/${msg.channelId}`);
+                console.log(`[IM] New session created: ${session.commandKey} for ${connection.channelProvider}/${msg.channelId}/${msg.userId}/${msg.authorName}`);
                 await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "✅ New session started." }]);
             } else {
                 await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: "❌ Failed to create new session." }]);
@@ -458,27 +557,28 @@ class ChannelConnectionManager {
     }
 
     /**
-     * Toggle the agent's `auto_audio_play` preference (TTS voice reply on/off).
+     * Toggle the agent's `auto_audio_play` preference (TTS audio reply).
+     * Accepts `/audio on`, `/audio off`, or `/audio` (toggle).
      * Persists via PreferenceManageUtils so the change survives across requests.
      */
-    private async handleToggleVoiceReplyCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
+    private async handleToggleAudioCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage, arg?: string): Promise<void> {
         try {
             const config = await CommandManageUtils.loadCommandConfig({
                 commandKey: connection.agentCommandKey,
                 includes: ["auto_audio_play"],
             });
             const current = config?.["auto_audio_play"] === true;
-            const next = !current;
+            const next = arg === "on" ? true : arg === "off" ? false : !current;
             await PreferenceManageUtils.updatePreference({
                 keys: ["auto_audio_play"],
                 value: next,
                 preferenceKey: connection.agentCommandKey,
             });
-            const status = next ? "🔊 Voice reply enabled" : "🔇 Voice reply disabled";
-            console.log(`[IM] /voice command: ${connection.agentCommandKey} auto_audio_play → ${next}`);
+            const status = next ? "🔊 Audio reply enabled" : "🔇 Audio reply disabled";
+            console.log(`[IM] /audio command: ${connection.agentCommandKey} auto_audio_play → ${next}`);
             await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: status }]);
         } catch (err: any) {
-            console.error(`[IM] /voice command failed:`, err.message);
+            console.error(`[IM] /audio command failed:`, err.message);
             await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
         }
     }
@@ -491,18 +591,18 @@ class ChannelConnectionManager {
             const config = await CommandManageUtils.loadCommandConfig({
                 commandKey: connection.agentCommandKey,
                 includes: ["llm", "auto_audio_play", 'title'],
-                useAsRunParams:true
+                useAsRunParams: true
             }) as any;
             const llm = config?.llm;
             const providerTitle = llm?.title || llm?.commandName || "(not configured)";
             const modelTitle = llm?.modelName?.title || llm?.modelName?.value || "(not configured)";
-            const voiceReply = config?.auto_audio_play === true ? "on" : "off";
+            const audioReply = config?.auto_audio_play === true ? "on" : "off";
             const text = [
                 `🤖 Name: ${config.title}`,
                 `🤖 AgentId: ${connection.agentCommandKey}`,
                 `🧠 Provider: ${providerTitle}`,
                 `🎯 Model: ${modelTitle}`,
-                `🔊 Voice reply: ${voiceReply}`,
+                `🔊 Audio reply: ${audioReply}`,
             ].join("\n");
             await connection.provider.sendMessage(msg.channelId, [{ type: "text", text }]);
         } catch (err: any) {
