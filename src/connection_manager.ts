@@ -1,8 +1,9 @@
-import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, RequestOptions, Runtime, TTSProvider, DictationProvider, PreferenceManageUtils } from "@enconvo/api";
+import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, RequestOptions, Runtime, TTSProvider, DictationProvider, PreferenceManageUtils, ExtensionCommand } from "@enconvo/api";
 import { splitTextForTTS } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { getAgentRunningStatus } from "./utils/agent_utils.ts";
 
 export interface ActiveConnection {
     id: string;
@@ -380,7 +381,21 @@ class ChannelConnectionManager {
 
             // Create an AbortController so /stop can cancel this request
             const abortController = new AbortController();
-            this.activeRequests.set(msg.channelId, abortController);
+
+            let agentRunningStatus: 'running' | 'completed' | 'failed' = 'completed'
+
+            const getAgentLastSessionResp = await NativeAPI.localApi("agent/latest_session", {
+                agentId: connection.agentCommandKey,
+                invokeSource: `${connection.channelProvider}-${msg.channelId}`
+            })
+            if (getAgentLastSessionResp.ok) {
+                let rawCommand: ExtensionCommand = await getAgentLastSessionResp.json()
+                agentRunningStatus = await getAgentRunningStatus({ sessionId: rawCommand.name })
+            }
+
+            if (agentRunningStatus !== 'running') {
+                this.activeRequests.set(msg.channelId, abortController);
+            }
 
             if (isAgentMode) {
                 // Agent mode: fire-and-forget — the agent will use IM tools to reply
@@ -395,9 +410,6 @@ class ChannelConnectionManager {
                         console.log(`[IM] → Sent text-only agent reply to ${connection.channelProvider}/${msg.channelId}`);
                     }
 
-                    if ((connection.provider as any).stopTyping) {
-                        (connection.provider as any).stopTyping(msg.channelId);
-                    }
 
                 }).catch(async (err: any) => {
                     if (abortController.signal.aborted) {
@@ -406,15 +418,18 @@ class ChannelConnectionManager {
                         console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
                         await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
                     }
-                    if ((connection.provider as any).stopTyping) {
-                        (connection.provider as any).stopTyping(msg.channelId);
-                    }
                 }).finally(() => {
-                    this.activeRequests.delete(msg.channelId);
+                    if (agentRunningStatus !== 'running') {
+                        this.activeRequests.delete(msg.channelId);
+                        if ((connection.provider as any).stopTyping) {
+                            (connection.provider as any).stopTyping(msg.channelId);
+                        }
+                    }
                 });
             } else {
                 // Non-agent (chat) mode: await response and send result back to IM
                 try {
+
                     const resp = await NativeAPI.localApi("agent/messages", agentParams, { abortController });
 
                     if (abortController.signal.aborted) return;
@@ -450,9 +465,11 @@ class ChannelConnectionManager {
                         await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
                     }
                 } finally {
-                    this.activeRequests.delete(msg.channelId);
-                    if ((connection.provider as any).stopTyping) {
-                        (connection.provider as any).stopTyping(msg.channelId);
+                    if (agentRunningStatus !== 'running') {
+                        this.activeRequests.delete(msg.channelId);
+                        if ((connection.provider as any).stopTyping) {
+                            (connection.provider as any).stopTyping(msg.channelId);
+                        }
                     }
                 }
             }

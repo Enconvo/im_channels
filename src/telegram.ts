@@ -180,7 +180,7 @@ export class TelegramProvider extends IMChannelProvider {
                     clearTimeout(timeoutId);
                     if (this.pollTimeoutAbort === callAbort) this.pollTimeoutAbort = null;
                 }
-                console.log('update', result)
+                // console.log('update', result)
                 // Successful round-trip — reset backoff
                 this.reconnectAttempts = 0;
 
