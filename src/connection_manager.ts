@@ -525,8 +525,11 @@ class ChannelConnectionManager {
                 ``,
                 `\`\`\`${code}\`\`\``,
                 ``,
-                `Ask the bot owner to approve with:`,
+                `Ask the bot owner to approve in:`,
                 ``,
+                `1. Enconvo Settings > IM Channels > ${platformTitle} > Access Control > Approve`,
+                ``,
+                `2. Or via command line:`,
                 `\`\`\`copy\nenconvo im_channels pairing approve --channel ${channelName} --code ${code}\n\`\`\``,
             ].join("\n");
             await connection.provider.sendMessage(msg.channelId, [

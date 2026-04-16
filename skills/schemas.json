@@ -372,6 +372,23 @@
     "description": "Router for pairing",
     "routes": [
       {
+        "name": "access",
+        "description": "Get access control configuration for a channel",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "type": "string",
+              "description": "Channel name from all_channels list (e.g. \"telegram\", \"discord\")"
+            }
+          },
+          "required": [
+            "channel"
+          ]
+        },
+        "routePath": "im_channels/pairing/access"
+      },
+      {
         "name": "approve",
         "description": "Approve a pending pairing request to grant a user access to the bot",
         "parameters": {
