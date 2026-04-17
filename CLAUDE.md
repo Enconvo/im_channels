@@ -140,6 +140,7 @@ Managed via the `access` preference on each channel command (e.g. `im_channels|t
 | `list_bindings` | GET | List all bindings |
 | `all_channels` | GET | List all available IM channel providers |
 | `pairing/approve` | POST | Approve a pending pairing code (`channel`, `code`) |
+| `pairing/deny` | POST | Deny a pending pairing code (`channel`, `code`) |
 
 ### Shared Utilities (`src/utils.ts`)
 

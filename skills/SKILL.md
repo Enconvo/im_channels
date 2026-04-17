@@ -4,7 +4,7 @@ description: >
   IM channel integration for Telegram and Discord. Each channel is essentially a bot on the IM platform that can interact with an Enconvo agent — when a message arrives, the bind agent automatically processes and replies. One agent can serve multiple channels, but each channel is bound to exactly one agent.
 metadata:
   author: ysnows
-  version: "0.0.24"
+  version: "0.0.26"
 ---
 
 # IM Channels — Setup & Management

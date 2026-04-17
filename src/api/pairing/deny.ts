@@ -1,7 +1,7 @@
 import { CommandManageUtils, PreferenceManageUtils, ServiceProvider, IMChannelProvider } from "@enconvo/api";
 
-/** Approve pairing request params */
-interface ApproveParams {
+/** Deny pairing request params */
+interface DenyParams {
     /** Channel name from all_channels list (e.g. "telegram", "discord") */
     channel: string
     /** The 8-character pairing code */
@@ -9,12 +9,12 @@ interface ApproveParams {
 }
 
 /**
- * Approve a pending pairing request to grant a user access to the bot
- * @param {Request} request - Request object, body is {@link ApproveParams}
- * @returns Approved user info including userId and username
+ * Deny a pending pairing request — removes it from the pending list
+ * @param {Request} request - Request object, body is {@link DenyParams}
+ * @returns Denied user info including userId and username
  */
 export default async function POST(request: Request) {
-    const params = (await request.json()) as ApproveParams;
+    const params = (await request.json()) as DenyParams;
     const { channel, code } = params;
 
     if (!channel || !code) {
@@ -37,16 +37,6 @@ export default async function POST(request: Request) {
         return Response.json({ error: `Pairing code ${code} not found` }, { status: 404 });
     }
 
-    access.allowList = [
-        ...(access.allowList || []),
-        {
-            userId: entry.userId,
-            username: entry.username,
-            firstName: entry.firstName,
-            chatId: entry.chatId,
-            approvedAt: Date.now(),
-        },
-    ];
     access.pending = access.pending.filter((p: any) => p.code !== code.toUpperCase());
 
     await PreferenceManageUtils.updatePreference({
@@ -65,16 +55,16 @@ export default async function POST(request: Request) {
             const provider: IMChannelProvider = ServiceProvider.load(config);
             if (provider.isReady()) {
                 await provider.sendMessage(entry.chatId, [
-                    { type: "text", text: "Your pairing request is approved." },
+                    { type: "text", text: "Your pairing request was denied." },
                 ]);
             }
         } catch (err: any) {
-            console.error(`[IM] Failed to notify approved user on ${channel}:`, err.message);
+            console.error(`[IM] Failed to notify denied user on ${channel}:`, err.message);
         }
     }
 
     return Response.json({
         success: true,
-        approved: { userId: entry.userId, username: entry.username },
+        denied: { userId: entry.userId, username: entry.username },
     });
 }
