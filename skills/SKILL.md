@@ -170,6 +170,7 @@ Just use the `local_api` tool to request these APIs.
 | `im_channels/check_connection` | Check if a channel's credentials are valid by calling the platform API. Params: `channel_provider` (string, required) |
 | `im_channels/configured_channels` | Returns all IM channel provider commands with configured status, enabled state, bind agent, and launch status. _No params_ |
 | `im_channels/create_channel` | Create a new channel by duplicating the base provider command for a platform. _5 params — use `check_local_api_schemas` tool_ |
+| `im_channels/delete` | Delete an IM channel provider command. Only user-created providers (create_for === "chat") can be deleted; built-in providers are protected.. Params: `channel_provider` (string, required) |
 | `im_channels/launch_channel` | Launch a channel listener for a provider, reading config from preferences or using credential overrides. _4 params — use `check_local_api_schemas` tool_ |
 | `im_channels/launched_channels` | List all currently active channel connections from shared state. _No params_ |
 | `im_channels/restore_channels` | Restore all enabled channels, called on app startup or manually. _No params_ |

@@ -75,6 +75,24 @@
     }
   },
   {
+    "name": "delete",
+    "title": "delete",
+    "description": "Delete an IM channel provider command. Only user-created providers (create_for === \"chat\") can be deleted; built-in providers are protected.",
+    "routePath": "im_channels/delete",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel_provider": {
+          "type": "string",
+          "description": "The provider command key (e.g. \"im_channels|discord\")"
+        }
+      },
+      "required": [
+        "channel_provider"
+      ]
+    }
+  },
+  {
     "name": "launch_channel",
     "title": "launch_channel",
     "description": "Launch a channel listener for a provider, reading config from preferences or using credential overrides",
