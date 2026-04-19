@@ -2,8 +2,8 @@ import { CommandManageUtils } from "@enconvo/api";
 
 /** Get access control config params */
 interface AccessParams {
-    /** Channel name from all_channels list (e.g. "telegram", "discord") @required */
-    channel: string
+    /** The provider command key (e.g. "im_channels|telegram") @required */
+    channel_provider: string
 }
 
 /**
@@ -13,16 +13,14 @@ interface AccessParams {
  */
 export default async function POST(request: Request) {
     const params = (await request.json()) as AccessParams;
-    const { channel } = params;
+    const { channel_provider } = params;
 
-    if (!channel) {
-        return Response.json({ error: "Missing channel" }, { status: 400 });
+    if (!channel_provider) {
+        return Response.json({ error: "Missing channel_provider" }, { status: 400 });
     }
 
-    const commandKey = `im_channels|${channel}`;
-
     const config = await CommandManageUtils.loadCommandConfig({
-        commandKey,
+        commandKey: channel_provider,
         includes: ["access"],
     });
 
