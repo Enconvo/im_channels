@@ -1,10 +1,10 @@
 ---
 name: im_channels
 description: >
-  IM channel integration for Telegram and Discord. Each channel is essentially a bot on the IM platform that can interact with an Enconvo agent — when a message arrives, the bind agent automatically processes and replies. One agent can serve multiple channels, but each channel is bound to exactly one agent.
+  IM channel integration for Telegram and Discord. A channel provider is a bot on an IM platform (e.g. a Telegram bot, a Discord bot) that is bound to exactly one Enconvo agent: incoming messages are forwarded to the bound agent, which generates the reply. One agent can be bound to multiple channel providers across different platforms, but each channel provider can be bound to at most one agent.
 metadata:
   author: ysnows
-  version: "0.0.28"
+  version: "0.0.40"
 ---
 
 # IM Channels — Setup & Management
@@ -166,6 +166,7 @@ Just use the `local_api` tool to request these APIs.
 
 | Endpoint | Description |
 |----------|-------------|
+| `im_channels/agent_channel_providers` | Get all IM channel providers bound to a given agent, including each provider's basic info and access control configuration (policy, allowList, pending pairings). An agent can be bound to many channel providers; each provider is bound to at most one agent.. Params: `agentId` (string, required) |
 | `im_channels/all_channels` | List all available IM channel providers. _No params_ |
 | `im_channels/check_connection` | Check if a channel's credentials are valid by calling the platform API. Params: `channel_provider` (string, required) |
 | `im_channels/configured_channels` | Returns all IM channel provider commands with configured status, enabled state, bind agent, and launch status. _No params_ |
@@ -182,7 +183,7 @@ Just use the `local_api` tool to request these APIs.
 | `im_channels/discord_actions/fetch_messages` | Pull recent message history from a Discord channel sorted oldest-first. Params: `channel_provider` (string, required), `channel_id` (string, required), `limit` (number, default: 50) |
 | `im_channels/discord_actions/react` | Add an emoji reaction to a Discord message by ID. _4 params — use `check_local_api_schemas` tool_ |
 | `im_channels/discord_actions/reply` | Send a message to a Discord channel or DM with optional file attachments and threading. _6 params — use `check_local_api_schemas` tool_ |
-| `im_channels/pairing/access` | Get access control configuration for a channel. Params: `channel` (string, required) |
+| `im_channels/pairing/access` | Get access control configuration for a channel. Params: `channel_provider` (string, required) |
 | `im_channels/pairing/approve` | Approve a pending pairing request to grant a user access to the bot. Params: `channel` (string, required), `code` (string, required) |
 | `im_channels/pairing/deny` | Deny a pending pairing request — removes it from the pending list. Params: `channel` (string, required), `code` (string, required) |
 | `im_channels/telegram_actions/bot_api` | Call any Telegram Bot API method directly. The bot token is injected automatically — you only need to specify the method name and its parameters. This is a generic passthrough to the Telegram Bot API. Use it for any method not covered by the dedicated tools (reply, edit_message, react). File upload: any value that is a local file path (starting with "/") or a URL (http/https) inside params — at any nesting depth — will be automatically downloaded and uploaded via multipart/form-data using Telegram's `attach://` syntax. This works for top-level fields and nested InputFile fields (e.g. InputProfilePhoto). Max file size: 50 MB (Telegram Bot API limit). You can also use `local_api enconvo/upload_file {"filePath": "/path/to/file"}` to upload a file first and get a hosted URL. Common methods: - `getMe` — get bot info (username, id, etc.) - `setMyProfilePhoto` — set bot's own profile photo. Params: `{"photo": {"type": "static", "photo": "/path/to/image.png"}}` or `{"photo": {"type": "static", "photo": "https://..."}}` - `deleteMyProfilePhoto` — remove bot's profile photo - `setMyName` — change bot display name. Params: `{"name": "New Name"}` - `setMyDescription` — change bot description. Params: `{"description": "text"}` - `setMyShortDescription` — change bot short description shown in profile - `setChatPhoto` — set group chat photo (bot must be admin). Params: `{"chat_id": "...", "photo": "/path/to/photo.png"}` - `deleteChatPhoto` — remove group chat photo - `getChat` — get chat details. Params: `{"chat_id": "..."}` - `getChatMemberCount` — count members. Params: `{"chat_id": "..."}` - `getChatMember` — get a specific member's info. Params: `{"chat_id": "...", "user_id": 123}` - `banChatMember` / `unbanChatMember` — moderation - `pinChatMessage` / `unpinChatMessage` — pin/unpin messages - `setMyCommands` — set bot command menu. Params: `{"commands": [{"command": "start", "description": "Start the bot"}]}` - `deleteMyCommands` — remove bot command menu - `getMyCommands` — list current bot commands - `setChatMenuButton` — set bot menu button - `sendSticker` — send a sticker. Params: `{"chat_id": "...", "sticker": "/path/to/sticker.webp"}` - `createNewStickerSet` / `addStickerToSet` — sticker set management - `getCustomEmojiStickers` — get custom emoji stickers by IDs - `setMessageReaction` — react to a message (also available as dedicated `react` tool) - `forwardMessage` — forward a message. Params: `{"chat_id": "...", "from_chat_id": "...", "message_id": 123}` - `copyMessage` — copy a message without "forwarded" label - `exportChatInviteLink` — generate invite link for a group - `setChatTitle` / `setChatDescription` — change group title/description - `leaveChat` — make the bot leave a chat Full reference: https://core.telegram.org/bots/api. Params: `channel_provider` (string, required), `method` (string, required), `params` (object) |
@@ -193,7 +194,7 @@ Just use the `local_api` tool to request these APIs.
 
 ## Browser Control Integration
 
-Before guiding manual steps, check if Browser Control is ready. Use `browser_control/status` to verify — it returns connection state directly.
+Before guiding manual steps, check if Browser Control is ready. Use `browser-use/status` to verify — it returns connection state directly.
 
 - **If connected:** Browser Control is available. Proceed with automation.
 - **If unavailable:** The user needs to install the **Enconvo Companion** Chrome extension. Offer to help them install it, or fall back to manual steps.
@@ -202,14 +203,14 @@ Available Browser Control tools:
 
 | Tool | Purpose |
 |------|---------|
-| `browser_control/status` | Check if Browser Control is connected |
-| `browser_control/navigate` | Open a URL |
-| `browser_control/snapshot` | **Use before every interaction** — returns page DOM tree with element refs for click/fill targeting |
-| `browser_control/click` | Click an element (use ref from snapshot) |
-| `browser_control/fill` | Fill a text field (use ref from snapshot) |
-| `browser_control/get_text` | Read text from page |
-| `browser_control/screenshot` | Take a visual screenshot |
-| `browser_control/wait_for` | Wait for element to appear |
+| `browser-use/status` | Check if Browser Control is connected |
+| `browser-use/navigate` | Open a URL |
+| `browser-use/snapshot` | **Use before every interaction** — returns page DOM tree with element refs for click/fill targeting |
+| `browser-use/click` | Click an element (use ref from snapshot) |
+| `browser-use/fill` | Fill a text field (use ref from snapshot) |
+| `browser-use/get_text` | Read text from page |
+| `browser-use/screenshot` | Take a visual screenshot |
+| `browser-use/wait_for` | Wait for element to appear |
 
 **Pattern:** Always call `snapshot` first to get the DOM tree → find element refs → then `click`/`fill` using those refs. Use `screenshot` as a visual aid to verify page state or show the user what's on screen.
 
@@ -292,20 +293,20 @@ Run `python3 SKILL_DIR/scripts/botfather.py status`
 
 The CLI needs Telegram API credentials (`api_id` + `api_hash`) from https://my.telegram.org.
 
-Check `browser_control/status` to decide how to obtain them:
+Check `browser-use/status` to decide how to obtain them:
 
 - **Browser Control available →** automate credential retrieval (always `snapshot` before interacting):
-  1. `browser_control/navigate` → `https://my.telegram.org/auth`
-  2. `browser_control/snapshot` + `browser_control/screenshot` — inspect login page, show user
+  1. `browser-use/navigate` → `https://my.telegram.org/auth`
+  2. `browser-use/snapshot` + `browser-use/screenshot` — inspect login page, show user
   3. Tell the user: "Please enter your phone number and complete login. Let me know when done."
   4. Once user confirms login, **proceed automatically** — no further prompts:
-  5. `browser_control/snapshot` — verify login, identify page elements
-  6. `browser_control/click` → "API development tools" link (use ref from snapshot)
-  7. `browser_control/snapshot` — check if app exists or needs creation
-  8. If no app: automatically create — `browser_control/fill` fields (title: `BotFather CLI`, short name: `botfather_cli`, platform: `Desktop`) → `browser_control/click` "Create application"
-  9. `browser_control/snapshot` → verify creation succeeded and extract `api_id` and `api_hash`
+  5. `browser-use/snapshot` — verify login, identify page elements
+  6. `browser-use/click` → "API development tools" link (use ref from snapshot)
+  7. `browser-use/snapshot` — check if app exists or needs creation
+  8. If no app: automatically create — `browser-use/fill` fields (title: `BotFather CLI`, short name: `botfather_cli`, platform: `Desktop`) → `browser-use/click` "Create application"
+  9. `browser-use/snapshot` → verify creation succeeded and extract `api_id` and `api_hash`
   10. **If creation fails:** Tell the user to create the app manually at https://my.telegram.org, then provide `api_id` and `api_hash`
-  11. `browser_control/screenshot` — show user the result
+  11. `browser-use/screenshot` — show user the result
   11. Save creds: `python3 SKILL_DIR/scripts/botfather.py save-creds --api-id <ID> --api-hash <HASH> --skip-auth`
   12. Run Telethon auth (interactive terminal — user must type phone + code): `python3 SKILL_DIR/scripts/botfather.py auth`
 
@@ -330,7 +331,7 @@ Parse the token from the JSON output.
 
 **Discord:**
 
-Check `browser_control/status` first.
+Check `browser-use/status` first.
 
 **Discord (automated with Browser Control):**
 1. Navigate to `https://discord.com/developers/applications`

@@ -1,5 +1,5 @@
 import { IMChannelProvider } from "@enconvo/api";
-import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay } from "./utils.ts";
+import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay, logImChannelEvent } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -290,8 +290,10 @@ export class TelegramProvider extends IMChannelProvider {
                         // Global stop or explicit reconnect — exit immediately if stopped
                         if (!this.pollingActive) break;
                         console.warn("[Telegram] getUpdates aborted (timeout/reconnect), reconnecting");
+                        logImChannelEvent("telegram", "WARN", `getUpdates aborted, reconnecting (attempt ${this.reconnectAttempts + 1})`);
                     } else {
                         console.error("Telegram polling error:", err);
+                        logImChannelEvent("telegram", "ERROR", `Polling disconnected, reconnecting (attempt ${this.reconnectAttempts + 1})`, err);
                     }
                     const delay = backoffDelay(this.reconnectAttempts++);
                     await sleep(delay);
@@ -348,9 +350,9 @@ export class TelegramProvider extends IMChannelProvider {
         ];
 
         try {
-            console.log('ensureBotCommands', this.pollingActive)
+            // console.log('ensureBotCommands', this.pollingActive)
             const current = await this.apiCall("getMyCommands", {});
-            console.log('ensureBotCommands 2', current)
+            // console.log('ensureBotCommands 2', current)
             const existing = (current.ok && Array.isArray(current.result)) ? current.result as { command: string }[] : [];
             const existingNames = new Set(existing.map((c: { command: string }) => c.command));
 

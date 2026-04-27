@@ -1,5 +1,5 @@
 import { IMChannelProvider } from "@enconvo/api";
-import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay } from "./utils.ts";
+import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay, logImChannelEvent } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -225,9 +225,13 @@ export class DiscordProvider extends IMChannelProvider {
         while (this.listenerActive) {
             try {
                 await this.runGateway(handler);
+                if (this.listenerActive) {
+                    logImChannelEvent("discord", "WARN", `Gateway disconnected, will reconnect (attempt ${this.reconnectAttempts + 1})`);
+                }
             } catch (err: any) {
                 if (this.listenerActive) {
                     console.error("Discord gateway error:", err);
+                    logImChannelEvent("discord", "ERROR", `Gateway error, will reconnect (attempt ${this.reconnectAttempts + 1})`, err);
                 }
             }
             if (this.listenerActive) {
@@ -264,7 +268,9 @@ export class DiscordProvider extends IMChannelProvider {
                             if (this.heartbeatWatchdog) clearInterval(this.heartbeatWatchdog);
                             this.heartbeatWatchdog = setInterval(() => {
                                 if (Date.now() - this.lastHeartbeatAckAt > interval * 2) {
-                                    console.warn(`[Discord] Heartbeat ack timeout (${Date.now() - this.lastHeartbeatAckAt}ms), forcing reconnect`);
+                                    const lag = Date.now() - this.lastHeartbeatAckAt;
+                                    console.warn(`[Discord] Heartbeat ack timeout (${lag}ms), forcing reconnect`);
+                                    logImChannelEvent("discord", "WARN", `Heartbeat ack timeout (${lag}ms), forcing reconnect`);
                                     try { ws.close(); } catch { }
                                 }
                             }, Math.max(interval, 5000));
@@ -327,6 +333,7 @@ export class DiscordProvider extends IMChannelProvider {
 
             ws.onerror = (err) => {
                 console.error("Discord WebSocket error:", err);
+                logImChannelEvent("discord", "ERROR", "WebSocket error", err);
                 try { ws.close(); } catch { }
             };
         });

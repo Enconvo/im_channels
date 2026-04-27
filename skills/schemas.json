@@ -1,5 +1,23 @@
 [
   {
+    "name": "agent_channel_providers",
+    "title": "agent_channel_providers",
+    "description": "Get all IM channel providers bound to a given agent, including each provider's basic info and access control configuration (policy, allowList, pending pairings). An agent can be bound to many channel providers; each provider is bound to at most one agent.",
+    "routePath": "im_channels/agent_channel_providers",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "description": "The agent Id (command key) (e.g. \"agent|main\")"
+        }
+      },
+      "required": [
+        "agentId"
+      ]
+    }
+  },
+  {
     "name": "all_channels",
     "title": "all_channels",
     "description": "List all available IM channel providers",
@@ -395,13 +413,13 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "channel": {
+            "channel_provider": {
               "type": "string",
-              "description": "Channel name from all_channels list (e.g. \"telegram\", \"discord\")"
+              "description": "The provider command key (e.g. \"im_channels|telegram\")"
             }
           },
           "required": [
-            "channel"
+            "channel_provider"
           ]
         },
         "routePath": "im_channels/pairing/access"

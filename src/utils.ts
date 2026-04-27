@@ -1,6 +1,35 @@
 import { Extension, IMChannelProvider } from "@enconvo/api";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
+
+const IM_LOG_DIR = path.join(os.homedir(), ".cache", "enconvo", "logs", "im_channels");
+
+/**
+ * Append a single line to ~/.cache/enconvo/logs/im_channels/{YYYY-MM-DD}.log.
+ * Best-effort — never throws.
+ */
+export function logImChannelEvent(
+    channel: string,
+    level: "INFO" | "WARN" | "ERROR",
+    message: string,
+    error?: any,
+): void {
+    try {
+        if (!fs.existsSync(IM_LOG_DIR)) {
+            fs.mkdirSync(IM_LOG_DIR, { recursive: true });
+        }
+        const date = new Date().toISOString().split("T")[0];
+        const logFile = path.join(IM_LOG_DIR, `${date}.log`);
+        const ts = new Date().toISOString();
+        const errStr = error
+            ? "\n" + (error?.stack || error?.message || (typeof error === "object" ? JSON.stringify(error) : String(error)))
+            : "";
+        fs.appendFileSync(logFile, `[${ts}] [${level}] [${channel}] ${message}${errStr}\n`);
+    } catch {
+        // best-effort logging
+    }
+}
 
 export async function withRetry<T>(
     fn: () => Promise<T>,

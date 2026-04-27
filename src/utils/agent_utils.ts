@@ -1,19 +1,24 @@
-import { NativeAPI, NativeEventUtils } from "@enconvo/api";
+import { NativeAPI } from "@enconvo/api";
 
-export async function updateAgentRunningStatus(params: { commandKey: string, status: 'running' | 'completed' | 'failed' }) {
-    await NativeAPI.api("search/upsert_command", {
-        commandKey: params.commandKey,
-        updateFields: { run_status: params.status },
-    });
-    NativeEventUtils.sendEvent("run_status_changed", { commandKey: params.commandKey, runStatus: params.status }).catch(() => { });
-}
+export type AgentRunStatus = "idle" | "running" | "completed" | "failed";
 
+export namespace AgentUtils {
+    export async function updateRunningStatus(params: { sessionId: string; status: AgentRunStatus }) {
+        const response = await NativeAPI.localApi("agent/session/update", {
+            sessionId: params.sessionId,
+            runStatus: params.status,
+        });
+        const data = await response.json();
+        console.log('updateRunningStatus', data, {
+            sessionId: params.sessionId,
+            runStatus: params.status,
+        })
+    }
 
-export async function getAgentRunningStatus(params: { sessionId: string }) {
-    // Check if this session's agent is already running (skip for sub-agents)
-    const agentStatusResp = await NativeAPI.api('agent/check_agent_status', { sessionId: params.sessionId })
-    const agentStatusData = await agentStatusResp.json()
-    // console.log('agentStatusData', agentStatusData)
-    const runningStatus = agentStatusData?.run_status
-    return runningStatus as 'running' | 'completed' | 'failed'
+    export async function getRunningStatus(params: { sessionId: string }): Promise<AgentRunStatus | undefined> {
+        const response = await NativeAPI.localApi("agent/session/status", { sessionId: params.sessionId });
+        const data = await response.json();
+        console.log('getRunningStatus', data)
+        return data?.run_status as AgentRunStatus | undefined;
+    }
 }

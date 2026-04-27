@@ -3,7 +3,7 @@ import { CommandManageUtils, NativeAPI } from "@enconvo/api";
 /** Request params for agent_channel_providers */
 interface AgentChannelProvidersParams {
     /** The agent Id (command key) (e.g. "agent|main") @required */
-    agent: string
+    agentId: string
 }
 
 /** Provider info plus its access control configuration */
@@ -33,10 +33,10 @@ interface AgentChannelProvider {
  */
 export default async function main(request: Request) {
     const params = (await request.json()) as AgentChannelProvidersParams;
-    const { agent } = params;
+    const { agentId } = params;
 
-    if (!agent) {
-        return Response.json({ error: "Missing agent" }, { status: 400 });
+    if (!agentId) {
+        return Response.json({ error: "Missing agentId" }, { status: 400 });
     }
 
     const results = (await NativeAPI.localApi("search/providers", {
@@ -51,7 +51,7 @@ export default async function main(request: Request) {
             includes: ["bound_agent", "enabled", "access"],
         })) as Record<string, any> | null;
 
-        if (config?.bound_agent !== agent) continue;
+        if (config?.bound_agent !== agentId) continue;
 
         providers.push({
             name: item.name,

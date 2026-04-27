@@ -1,9 +1,9 @@
-import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, RequestOptions, Runtime, TTSProvider, DictationProvider, PreferenceManageUtils, ExtensionCommand } from "@enconvo/api";
+import { CommandManageUtils, NativeAPI, NativeEventUtils, IMChannelProvider, ServiceProvider, Runtime, TTSProvider, DictationProvider, PreferenceManageUtils, ExtensionCommand, SendRequestOptions } from "@enconvo/api";
 import { splitTextForTTS } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { getAgentRunningStatus } from "./utils/agent_utils.ts";
+import { AgentRunStatus, AgentUtils } from "./utils/agent_utils.ts";
 
 export interface ActiveConnection {
     id: string;
@@ -61,6 +61,7 @@ function normalizeAccess(val: any): AccessControl {
 
 const STATE_DIR = path.join(os.homedir(), ".config", "enconvo", "im_channels");
 const STATE_FILE = path.join(STATE_DIR, "active_connections.json");
+const LOG_DIR = path.join(os.homedir(), ".cache", "enconvo", "logs", "im_channels");
 
 const GLOBAL_KEY = "__im_channel_connection_manager__";
 
@@ -241,7 +242,7 @@ class ChannelConnectionManager {
             const results = (await NativeAPI.localApi("search/providers", {
                 category: "im_channel",
             } as any).then(r => r.json())) as any[];
-            console.log('restore all results', results);
+            // console.log('restore all results', results);
 
             if (!Array.isArray(results)) return;
 
@@ -306,7 +307,16 @@ class ChannelConnectionManager {
 
     private createHandler(connection: ActiveConnection): (msg: IMChannelProvider.IncomingMessage) => Promise<void> {
         return async (msg: IMChannelProvider.IncomingMessage) => {
-            console.log(`[IM] ← Received: ${connection.channelProvider}/${msg.channelId} from ${msg.authorName}: ${msg.content.substring(0, 200)}`, msg);
+            try {
+                await this.handleIncomingMessage(connection, msg);
+            } catch (err: any) {
+                await this.handleListenerError(connection, msg, err);
+            }
+        };
+    }
+
+    private async handleIncomingMessage(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
+        console.log(`[IM] ← Received: ${connection.channelProvider}/${msg.channelId} from ${msg.authorName}: ${msg.content?.substring(0, 200)}`, msg);
 
             // Access control gate — unapproved users get a pairing code instead of agent access.
             // All messages (including bot commands) require authorization first.
@@ -354,7 +364,7 @@ class ChannelConnectionManager {
             console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey}, agentMode: ${isAgentMode}`);
 
             const { inputText, remainingFiles } = await this.transcribeVoiceFiles(msg);
-            const agentParams: RequestOptions = {
+            const agentParams: SendRequestOptions = {
                 agentId: connection.agentCommandKey,
                 invoke_source: `${connection.channelProvider}-${msg.channelId}`,
                 context_items: [
@@ -382,15 +392,15 @@ class ChannelConnectionManager {
             // Create an AbortController so /stop can cancel this request
             const abortController = new AbortController();
 
-            let agentRunningStatus: 'running' | 'completed' | 'failed' = 'completed'
+            let agentRunningStatus: AgentRunStatus | undefined = 'completed'
 
-            const getAgentLastSessionResp = await NativeAPI.localApi("agent/latest_session", {
+            const getAgentLastSessionResp = await NativeAPI.localApi("agent/session/latest", {
                 agentId: connection.agentCommandKey,
                 invokeSource: `${connection.channelProvider}-${msg.channelId}`
             })
             if (getAgentLastSessionResp.ok) {
                 let rawCommand: ExtensionCommand = await getAgentLastSessionResp.json()
-                agentRunningStatus = await getAgentRunningStatus({ sessionId: rawCommand.name })
+                agentRunningStatus = await AgentUtils.getRunningStatus({ sessionId: rawCommand.name })
             }
 
             if (agentRunningStatus !== 'running') {
@@ -473,7 +483,93 @@ class ChannelConnectionManager {
                     }
                 }
             }
-        };
+    }
+
+    private async handleListenerError(
+        connection: ActiveConnection,
+        msg: IMChannelProvider.IncomingMessage,
+        err: any,
+    ): Promise<void> {
+        const isDisconnect = this.looksLikeDisconnect(err);
+        console.error(`[IM] ✗ Handler error in ${connection.channelProvider}/${msg.channelId}:`, err);
+        this.logToFile(
+            connection.channelProvider,
+            "ERROR",
+            `Handler error (channel=${msg.channelId}, disconnect=${isDisconnect})`,
+            err,
+        );
+
+        try {
+            if ((connection.provider as any).stopTyping) {
+                (connection.provider as any).stopTyping(msg.channelId);
+            }
+        } catch { /* ignore */ }
+
+        try {
+            await connection.provider.sendMessage(msg.channelId, [
+                { type: "text", text: `❌ Internal error: ${err?.message || String(err)}` },
+            ]);
+        } catch (sendErr: any) {
+            console.error(`[IM] Failed to deliver error message to channel:`, sendErr);
+            this.logToFile(connection.channelProvider, "ERROR", "Failed to deliver error to channel", sendErr);
+        }
+
+        if (isDisconnect) {
+            this.relaunch(connection.channelProvider).catch(() => { });
+        }
+    }
+
+    private looksLikeDisconnect(err: any): boolean {
+        const code = err?.code;
+        if (
+            code === "ECONNRESET" || code === "ETIMEDOUT" || code === "ECONNREFUSED" ||
+            code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ENETUNREACH" ||
+            code === "EPIPE" || code === "EHOSTUNREACH"
+        ) return true;
+        const msg = (err?.message || String(err)).toLowerCase();
+        return /econn|etimedout|enotfound|network|disconnect|socket hang up|websocket|connection (closed|lost|terminated|reset)|timed? ?out|fetch failed/.test(msg);
+    }
+
+    private logToFile(
+        channelProvider: string,
+        level: "INFO" | "WARN" | "ERROR",
+        message: string,
+        error?: any,
+    ): void {
+        try {
+            if (!fs.existsSync(LOG_DIR)) {
+                fs.mkdirSync(LOG_DIR, { recursive: true });
+            }
+            const date = new Date().toISOString().split("T")[0];
+            const logFile = path.join(LOG_DIR, `${date}.log`);
+            const ts = new Date().toISOString();
+            const errStr = error
+                ? "\n" + (error?.stack || error?.message || (typeof error === "object" ? JSON.stringify(error) : String(error)))
+                : "";
+            fs.appendFileSync(logFile, `[${ts}] [${level}] [${channelProvider}] ${message}${errStr}\n`);
+        } catch {
+            // best-effort logging
+        }
+    }
+
+    /**
+     * Stop and re-launch a channel — used when the listener appears to have disconnected.
+     */
+    async relaunch(channelProvider: string): Promise<ActiveConnection | null> {
+        console.log(`[IM] Relaunching channel: ${channelProvider}`);
+        this.logToFile(channelProvider, "INFO", "Relaunching channel after disconnect");
+        try {
+            const conn = this.connections.get(channelProvider);
+            if (conn) {
+                try { await conn.provider.stopListener(); } catch { /* ignore */ }
+                this.connections.delete(channelProvider);
+            }
+            return await this.launch(channelProvider);
+        } catch (err: any) {
+            console.error(`[IM] Relaunch failed for ${channelProvider}:`, err);
+            this.logToFile(channelProvider, "ERROR", "Relaunch failed", err);
+            return null;
+        }
     }
 
     private async checkAccess(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<boolean> {
@@ -544,7 +640,7 @@ class ChannelConnectionManager {
 
     private async handleNewSessionCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): Promise<void> {
         try {
-            const resp = await NativeAPI.localApi("agent/new_session", {
+            const resp = await NativeAPI.localApi("agent/session/new", {
                 agentId: connection.agentCommandKey,
                 invokeSource: `${connection.channelProvider}-${msg.channelId}`
             });

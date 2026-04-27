@@ -23,28 +23,28 @@ The CLI needs Telegram API credentials (`api_id` + `api_hash`). There are two wa
 
 #### Browser Control Automation (recommended)
 
-Check if Browser Control is ready via `browser_control/status`. If unavailable, prompt the user to install the **Enconvo Companion** Chrome extension first.
+Check if Browser Control is ready via `browser-use/status`. If unavailable, prompt the user to install the **Enconvo Companion** Chrome extension first.
 
 If available, automate the my.telegram.org workflow.
 
-**Pattern:** Use `browser_control/snapshot` before every interaction — it returns the page DOM tree with element references you can target for `click` and `fill`. Use `browser_control/screenshot` as a visual aid to verify page state or show the user what's happening. Always snapshot first to get refs, then act.
+**Pattern:** Use `browser-use/snapshot` before every interaction — it returns the page DOM tree with element references you can target for `click` and `fill`. Use `browser-use/screenshot` as a visual aid to verify page state or show the user what's happening. Always snapshot first to get refs, then act.
 
-1. `browser_control/navigate` → `https://my.telegram.org/auth`
-2. `browser_control/snapshot` + `browser_control/screenshot` — inspect login page, show user the page
+1. `browser-use/navigate` → `https://my.telegram.org/auth`
+2. `browser-use/snapshot` + `browser-use/screenshot` — inspect login page, show user the page
 3. Ask the user to enter their phone number and complete login. Wait for confirmation.
 4. Once user confirms login, **proceed automatically** — no further prompts needed:
-5. `browser_control/snapshot` — verify login succeeded, identify page elements
-6. `browser_control/click` → click **"API development tools"** link (use ref from snapshot)
-7. `browser_control/snapshot` — inspect the page:
+5. `browser-use/snapshot` — verify login succeeded, identify page elements
+6. `browser-use/click` → click **"API development tools"** link (use ref from snapshot)
+7. `browser-use/snapshot` — inspect the page:
    - **App already exists:** `api_id` and `api_hash` are visible in the DOM → extract values directly
    - **No app yet:** Automatically create it:
-     - `browser_control/fill` → App title: `BotFather CLI` (use ref from snapshot)
-     - `browser_control/fill` → Short name: `botfather_cli`
+     - `browser-use/fill` → App title: `BotFather CLI` (use ref from snapshot)
+     - `browser-use/fill` → Short name: `botfather_cli`
      - Platform: `Desktop`
-     - `browser_control/click` → "Create application"
-     - `browser_control/snapshot` → verify creation succeeded and extract `api_id` and `api_hash`
+     - `browser-use/click` → "Create application"
+     - `browser-use/snapshot` → verify creation succeeded and extract `api_id` and `api_hash`
      - **If creation fails:** Tell the user to create the app manually at https://my.telegram.org, then provide `api_id` and `api_hash`. Fall back to manual setup below.
-8. `browser_control/screenshot` — show user the result for confirmation
+8. `browser-use/screenshot` — show user the result for confirmation
 9. Save credentials:
    ```bash
    SKILL_DIR/scripts/botfather.py save-creds --api-id <ID> --api-hash <HASH> --skip-auth
