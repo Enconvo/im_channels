@@ -728,9 +728,12 @@ class ChannelConnectionManager {
     }
 
     /**
-     * If the agent response is `{ type: "messages", messages: [{ content: [...] }] }`
-     * and every content item is `type: "text"`, return the joined text.
-     * Otherwise return null (the agent used tools like IM reply to send the message itself).
+     * Extract text the bot should send to the channel itself.
+     * - `text` content is returned directly.
+     * - `flow_step` content whose result lacks `"success":true` is surfaced as an error,
+     *   so the user sees why the tool call failed instead of silence.
+     * - Successful tool calls (the agent already delivered via IM tools) are skipped.
+     * - Any other content type makes the agent owner of delivery — return null.
      */
     private extractTextOnlyReply(json: any): string | null {
         if (json?.type !== "messages" || !Array.isArray(json.messages)) return null;
@@ -740,13 +743,42 @@ class ChannelConnectionManager {
             if (message.role !== "assistant") continue;
             const contents = Array.isArray(message.content) ? message.content : [];
             if (contents.length === 0) continue;
-            // If any content item is not text, the agent handled delivery itself
-            if (contents.some((c: any) => c.type !== "text")) return null;
+
             for (const c of contents) {
-                if (c.text) texts.push(c.text);
+                if (c.type === "text") {
+                    if (c.text) texts.push(c.text);
+                } else if (c.type === "flow_step") {
+                    const errorText = this.extractFlowStepError(c);
+                    if (errorText) texts.push(`❌ ${errorText}`);
+                } else {
+                    return null;
+                }
             }
         }
         return texts.length > 0 ? texts.join("\n") : null;
+    }
+
+    /**
+     * Pull an error message out of a flow_step whose results don't contain `"success":true`.
+     * Returns null when the tool call succeeded.
+     */
+    private extractFlowStepError(step: any): string | null {
+        const results = Array.isArray(step?.flowResults) ? step.flowResults : [];
+        for (const result of results) {
+            const contents = Array.isArray(result?.content) ? result.content : [];
+            for (const c of contents) {
+                if (c.type !== "text" || typeof c.text !== "string") continue;
+                if (c.text.includes('"success":true')) continue;
+                try {
+                    const parsed = JSON.parse(c.text);
+                    if (parsed?.error) return String(parsed.error);
+                } catch {
+                    // not JSON — fall through and surface raw text
+                }
+                return c.text;
+            }
+        }
+        return null;
     }
 
     private async extractResponseText(resp: Response): Promise<string | null> {

@@ -9,8 +9,8 @@ interface TelegramReplyParams {
     channel_provider: string;
     /** Message text to send @required */
     text: string;
-    /** Target chat ID. If omitted, sends to the default configured chat. */
-    chat_id?: string;
+    /** Target chat ID @required */
+    chat_id: string;
     /** Message ID to reply to (creates native threading). Only use in group chats, not private chats. */
     reply_to?: string;
     /** Absolute file paths to attach. Images (.jpg/.png/.gif/.webp) as photos; others as documents. Max 50MB each. If a file exceeds 50MB, try compressing it first; if still over 50MB, split it into smaller segments before sending. */
@@ -24,11 +24,10 @@ interface TelegramReplyParams {
  */
 export default async function main(request: Request) {
     const params = (await request.json()) as TelegramReplyParams;
-    const { channel_provider, text, reply_to, files } = params;
-    let { chat_id } = params;
+    const { channel_provider, text, chat_id, reply_to, files } = params;
 
-    if (!channel_provider || !text) {
-        return Response.json({ error: "Missing required fields: channel_provider, text" }, { status: 400 });
+    if (!channel_provider || !text || !chat_id) {
+        return Response.json({ error: "Missing required fields: channel_provider, text, chat_id" }, { status: 400 });
     }
 
     const connection = ChannelConnectionManager.shared().getLocalActive()
@@ -36,14 +35,6 @@ export default async function main(request: Request) {
 
     if (!connection) {
         return Response.json({ error: `No active connection for ${channel_provider}` }, { status: 404 });
-    }
-
-    if (!chat_id) {
-        chat_id = connection.provider.defaultChannelId ?? undefined;
-    }
-
-    if (!chat_id) {
-        return Response.json({ error: "No chat_id provided and no default chat configured" }, { status: 400 });
     }
 
     try {
