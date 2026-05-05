@@ -1,11 +1,15 @@
 import { IMChannelProvider } from "@enconvo/api";
 import { withRetry, splitMessage, sleep, loadToolsFromSchema, backoffDelay, logImChannelEvent } from "./utils.ts";
+import axios, { AxiosInstance } from "axios";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 const DOWNLOAD_DIR = path.join(os.homedir(), ".config", "enconvo", "im_channels", "telegram", "inbox");
+// Telegram long-polls for 30s; 90s gives 3x headroom for slow networks before axios aborts.
+const HTTP_TIMEOUT = 90_000;
+const UPLOAD_TIMEOUT = 180_000;
 
 export default function main(options: IMChannelProvider.Options) {
     return new TelegramProvider(options);
@@ -19,9 +23,9 @@ export class TelegramProvider extends IMChannelProvider {
     private pollingActive = false;
     private lastUpdateId = 0;
     private pollingAbort: AbortController | null = null;
-    private pollTimeoutAbort: AbortController | null = null;
     private reconnectAttempts = 0;
     private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+    private http: AxiosInstance | null = null;
 
     constructor(options: IMChannelProvider.Options) {
         super(options);
@@ -96,8 +100,6 @@ export class TelegramProvider extends IMChannelProvider {
         this.pollingActive = false;
         this.pollingAbort?.abort();
         this.pollingAbort = null;
-        this.pollTimeoutAbort?.abort();
-        this.pollTimeoutAbort = null;
         for (const interval of this.typingIntervals.values()) {
             clearInterval(interval);
         }
@@ -110,7 +112,9 @@ export class TelegramProvider extends IMChannelProvider {
     async reconnect(): Promise<void> {
         if (!this.pollingActive) return;
         console.log("[Telegram] Forcing poll restart");
-        this.pollTimeoutAbort?.abort();
+        const old = this.pollingAbort;
+        this.pollingAbort = new AbortController();
+        old?.abort();
     }
 
     async destroy(): Promise<void> {
@@ -122,11 +126,7 @@ export class TelegramProvider extends IMChannelProvider {
 
         const sendAction = () => {
             if (!this.botToken) return;
-            fetch(`https://api.telegram.org/bot${this.botToken}/sendChatAction`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-            }).catch(() => { });
+            this.getHttp().post("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => { });
         };
 
         sendAction();
@@ -162,25 +162,15 @@ export class TelegramProvider extends IMChannelProvider {
     private async pollLoop(handler: IMChannelProvider.BotReplyHandler): Promise<void> {
         while (this.pollingActive) {
             try {
-                // Per-call watchdog: long-polling server holds for 30s; if we don't
-                // hear back within 35s, the socket is likely a zombie (sleep/wake,
-                // network change). Abort so the loop reconnects.
-                const callAbort = new AbortController();
-                this.pollTimeoutAbort = callAbort;
-                const timeoutId = setTimeout(() => callAbort.abort(), 35000);
-
-                let result: any;
-                try {
-                    result = await this.apiCall("getUpdates", {
-                        offset: this.lastUpdateId + 1,
-                        timeout: 30,
-                        allowed_updates: ["message"],
-                    }, callAbort.signal);
-                } finally {
-                    clearTimeout(timeoutId);
-                    if (this.pollTimeoutAbort === callAbort) this.pollTimeoutAbort = null;
-                }
-                // console.log('update', result)
+                // axios HTTP_TIMEOUT (90s) bounds each call; the long-poll server
+                // holds for 30s, so a healthy round-trip lands well inside the
+                // timeout. A zombie socket (sleep/wake, network change) trips
+                // axios's timeout naturally and the loop reconnects.
+                const result = await this.apiCall("getUpdates", {
+                    offset: this.lastUpdateId + 1,
+                    timeout: 30,
+                    allowed_updates: ["message"],
+                });
                 // Successful round-trip — reset backoff
                 this.reconnectAttempts = 0;
 
@@ -309,8 +299,10 @@ export class TelegramProvider extends IMChannelProvider {
             if (!fileInfo.ok || !fileInfo.result?.file_path) return null;
 
             const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${fileInfo.result.file_path}`;
-            const resp = await fetch(fileUrl);
-            if (!resp.ok) return null;
+            const resp = await axios.get<ArrayBuffer>(fileUrl, {
+                responseType: "arraybuffer",
+                timeout: UPLOAD_TIMEOUT,
+            });
 
             if (!fs.existsSync(DOWNLOAD_DIR)) {
                 fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -318,7 +310,7 @@ export class TelegramProvider extends IMChannelProvider {
 
             const fileName = `${prefix}_${Date.now()}${ext}`;
             const localPath = path.join(DOWNLOAD_DIR, fileName);
-            const buffer = Buffer.from(await resp.arrayBuffer());
+            const buffer = Buffer.from(resp.data);
             fs.writeFileSync(localPath, buffer);
 
             console.log(`[Telegram] Downloaded file: ${localPath} (${buffer.length} bytes)`);
@@ -340,12 +332,13 @@ export class TelegramProvider extends IMChannelProvider {
         return this.botInfoCache;
     }
 
-    /** Ensure /new, /stop, /audio, /status commands are registered with the Telegram bot */
+    /** Ensure /new, /stop, /audio, /verbose, /status commands are registered with the Telegram bot */
     private async ensureBotCommands(): Promise<void> {
         const requiredCommands = [
             { command: "new", description: "Start a new session" },
             { command: "stop", description: "Stop the current response" },
             { command: "audio", description: "Toggle audio (TTS) reply on/off" },
+            { command: "verbose", description: "Toggle verbose tool-title mirroring on/off" },
             { command: "status", description: "Show the status of current agent (provider, model, audio reply)" },
         ];
 
@@ -370,8 +363,6 @@ export class TelegramProvider extends IMChannelProvider {
 
     /** Upload a local file to Telegram via multipart/form-data */
     private async uploadFile(chatId: string, method: string, fieldName: string, filePath: string): Promise<any> {
-        if (!this.botToken) throw new Error("Telegram bot token not configured.");
-
         const fileBuffer = fs.readFileSync(filePath);
         const fileName = path.basename(filePath);
 
@@ -379,57 +370,60 @@ export class TelegramProvider extends IMChannelProvider {
         formData.append("chat_id", chatId);
         formData.append(fieldName, new Blob([fileBuffer]), fileName);
 
-        const response = await fetch(`${TELEGRAM_API}${this.botToken}/${method}`, {
-            method: "POST",
-            body: formData,
-        });
-
-        if (!response.ok) {
-            const body = await response.text();
-            const error: any = new Error(`Telegram API error ${response.status}: ${body}`);
-            error.status = response.status;
-            throw error;
+        try {
+            const response = await this.getHttp().post(method, formData, {
+                timeout: UPLOAD_TIMEOUT,
+                headers: { "Content-Type": "multipart/form-data" },
+            });
+            return response.data;
+        } catch (err: any) {
+            throw this.normalizeError(err);
         }
-
-        return response.json();
     }
 
-    private async apiCall(method: string, params: Record<string, any>, signal?: AbortSignal): Promise<any> {
+    private async apiCall(method: string, params: Record<string, any>): Promise<any> {
+        try {
+            const response = await this.getHttp().post(method, params, {
+                signal: this.pollingAbort?.signal,
+            });
+            return response.data;
+        } catch (err: any) {
+            throw this.normalizeError(err);
+        }
+    }
+
+    private getHttp(): AxiosInstance {
         if (!this.botToken) throw new Error("Telegram bot token not configured.");
-
-        // Merge caller signal with the global pollingAbort so either can cancel
-        const effectiveSignal = signal
-            ? anySignal([signal, this.pollingAbort?.signal])
-            : this.pollingAbort?.signal;
-
-        const response = await fetch(`${TELEGRAM_API}${this.botToken}/${method}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(params),
-            signal: effectiveSignal,
-        });
-
-        if (!response.ok) {
-            const body = await response.text();
-            const error: any = new Error(`Telegram API error ${response.status}: ${body}`);
-            error.status = response.status;
-            throw error;
+        if (!this.http) {
+            this.http = axios.create({
+                baseURL: `${TELEGRAM_API}${this.botToken}/`,
+                timeout: HTTP_TIMEOUT,
+                headers: { "Content-Type": "application/json" },
+            });
         }
-
-        return response.json();
+        return this.http;
     }
-}
 
-/** Combine multiple AbortSignals — if any fires, the returned signal aborts. */
-function anySignal(signals: (AbortSignal | undefined)[]): AbortSignal {
-    const controller = new AbortController();
-    for (const sig of signals) {
-        if (!sig) continue;
-        if (sig.aborted) {
-            controller.abort();
-            break;
+    /** Normalize axios errors into the shape the rest of the code expects (AbortError on cancel, status+message on HTTP errors). */
+    private normalizeError(err: any): Error {
+        if (
+            axios.isCancel(err) ||
+            err?.code === "ERR_CANCELED" ||
+            err?.code === "ECONNABORTED" ||
+            err?.name === "CanceledError"
+        ) {
+            const abortErr: any = new Error(err?.message || "Aborted");
+            abortErr.name = "AbortError";
+            return abortErr;
         }
-        sig.addEventListener("abort", () => controller.abort(), { once: true });
+        if (err?.response) {
+            const body = typeof err.response.data === "string"
+                ? err.response.data
+                : JSON.stringify(err.response.data);
+            const error: any = new Error(`Telegram API error ${err.response.status}: ${body}`);
+            error.status = err.response.status;
+            return error;
+        }
+        return err instanceof Error ? err : new Error(String(err));
     }
-    return controller.signal;
 }

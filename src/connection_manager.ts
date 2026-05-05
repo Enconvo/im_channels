@@ -3,6 +3,7 @@ import { splitTextForTTS } from "./utils.ts";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { threadId } from "worker_threads";
 import { AgentRunStatus, AgentUtils } from "./utils/agent_utils.ts";
 
 export interface ActiveConnection {
@@ -23,6 +24,7 @@ interface ConnectionRecord {
     startedAt: string;
     error?: string;
     pid: number;
+    threadId: number;
 }
 
 interface ProviderConfig {
@@ -61,6 +63,7 @@ function normalizeAccess(val: any): AccessControl {
 
 const STATE_DIR = path.join(os.homedir(), ".config", "enconvo", "im_channels");
 const STATE_FILE = path.join(STATE_DIR, "active_connections.json");
+const LOCK_DIR = path.join(STATE_DIR, "locks");
 const LOG_DIR = path.join(os.homedir(), ".cache", "enconvo", "logs", "im_channels");
 
 const GLOBAL_KEY = "__im_channel_connection_manager__";
@@ -89,15 +92,18 @@ class ChannelConnectionManager {
 
         const shutdown = () => {
             console.log("[IM] Process exiting, stopping all channels...");
-            for (const conn of this.connections.values()) {
+            for (const channelProvider of this.connections.keys()) {
                 try {
-                    conn.provider.stopListener();
+                    this.connections.get(channelProvider)?.provider.stopListener();
                 } catch { }
+                this.releaseLock(channelProvider);
             }
             this.connections.clear();
             // Clean state file so stale records don't linger
             try {
-                const records = this.loadState().filter(r => r.pid !== process.pid);
+                const records = this.loadState().filter(
+                    r => !(r.pid === process.pid && r.threadId === threadId),
+                );
                 this.ensureDir();
                 fs.writeFileSync(STATE_FILE, JSON.stringify(records, null, 2));
             } catch { }
@@ -119,19 +125,26 @@ class ChannelConnectionManager {
             }
         }
 
-        // Cross-Worker dedup: check state file for an alive connection from another Worker
-        const existingRecord = this.loadState().find(r => r.channelProvider === channelProvider);
-        if (existingRecord && existingRecord.pid !== process.pid && this.isProcessAlive(existingRecord.pid)) {
-            console.log(`[IM] Channel ${channelProvider} already launched by Worker PID ${existingRecord.pid}, skipping`);
-            return {
-                id: existingRecord.id,
-                channelProvider: existingRecord.channelProvider,
-                agentCommandKey: existingRecord.agentCommandKey,
-                status: existingRecord.status as any,
-                startedAt: existingRecord.startedAt,
-                error: existingRecord.error,
-                provider: null as any,
-            };
+        // Atomic ownership: protects against same-process races (multiple Worker
+        // threads share `process.pid` but each has its own ChannelConnectionManager,
+        // so a pid-only check fails). The lockfile is created with O_EXCL, so only
+        // one launcher across all processes/workers wins.
+        if (!this.acquireLock(channelProvider)) {
+            const existingRecord = this.loadState().find(r => r.channelProvider === channelProvider);
+            if (existingRecord) {
+                console.log(`[IM] Channel ${channelProvider} already launched by pid=${existingRecord.pid} thread=${existingRecord.threadId}, skipping`);
+                return {
+                    id: existingRecord.id,
+                    channelProvider: existingRecord.channelProvider,
+                    agentCommandKey: existingRecord.agentCommandKey,
+                    status: existingRecord.status as any,
+                    startedAt: existingRecord.startedAt,
+                    error: existingRecord.error,
+                    provider: null as any,
+                };
+            }
+            // Lock held but no record yet — another launcher is mid-flight
+            throw new Error(`Channel ${channelProvider} is being launched by another worker`);
         }
 
         // Build config: merge preferences with overrides
@@ -148,6 +161,7 @@ class ChannelConnectionManager {
 
         const agentCommandKey = config.bound_agent;
         if (!agentCommandKey) {
+            this.releaseLock(channelProvider);
             throw new Error(`No agent bound to provider ${channelProvider}`);
         }
 
@@ -162,6 +176,7 @@ class ChannelConnectionManager {
         const provider: IMChannelProvider = ServiceProvider.load(config);
 
         if (!provider.isReady()) {
+            this.releaseLock(channelProvider);
             throw new Error(`Provider for ${channelProvider} is not ready (missing credentials?)`);
         }
 
@@ -207,8 +222,9 @@ class ChannelConnectionManager {
             this.connections.delete(channelProvider);
         }
 
-        // Remove from shared state file
+        // Remove from shared state file + release lock
         this.removeState(channelProvider);
+        this.releaseLock(channelProvider);
         this.emitStatusEvent({
             channelProvider,
             status: "stopped",
@@ -336,6 +352,7 @@ class ChannelConnectionManager {
                 cmdName === "/new" || cmdName === "/newsession" ||
                 cmdName === "/stop" ||
                 cmdName === "/audio" ||
+                cmdName === "/verbose" ||
                 cmdName === "/status";
             if (isBotCommand) {
                 try {
@@ -345,6 +362,8 @@ class ChannelConnectionManager {
                         await this.handleStopCommand(connection, msg);
                     } else if (cmdName === "/audio") {
                         await this.handleToggleAudioCommand(connection, msg, cmdArgs[0]);
+                    } else if (cmdName === "/verbose") {
+                        await this.handleToggleVerboseCommand(connection, msg, cmdArgs[0]);
                     } else if (cmdName === "/status") {
                         await this.handleStatusCommand(connection, msg);
                     }
@@ -409,15 +428,22 @@ class ChannelConnectionManager {
 
             if (isAgentMode) {
                 // Agent mode: fire-and-forget — the agent will use IM tools to reply
-                NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal }).then(async (resp) => {
-                    const json = await resp.json()
-                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`, json);
+                void NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal }).then(async (resp) => {
+                    const body = await this.readAgentResponseBody(resp);
+                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`, JSON.stringify(body,null,2));
+
+                    if (!resp.ok) {
+                        await this.sendAgentErrorMessage(connection, msg, body, resp.status);
+                        return;
+                    }
 
                     // If the agent response contains only text content, it didn't use IM tools to reply — send it ourselves
-                    const textReply = this.extractTextOnlyReply(json);
+                    const textReply = this.extractTextOnlyReply(body);
                     if (textReply) {
-                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: textReply }], { replyTo: msg.messageId });
-                        console.log(`[IM] → Sent text-only agent reply to ${connection.channelProvider}/${msg.channelId}`);
+                        const delivered = await this.sendChannelTextSafely(connection, msg, textReply, { replyTo: msg.messageId });
+                        if (delivered) {
+                            console.log(`[IM] → Sent text-only agent reply to ${connection.channelProvider}/${msg.channelId}`);
+                        }
                     }
 
 
@@ -425,8 +451,9 @@ class ChannelConnectionManager {
                     if (abortController.signal.aborted) {
                         console.log(`[IM] Agent request aborted: ${connection.agentCommandKey}/${msg.channelId}`);
                     } else {
-                        console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
-                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
+                        const errorMessage = this.extractErrorMessage(err) || "Unknown error";
+                        console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, errorMessage);
+                        await this.sendAgentErrorMessage(connection, msg, errorMessage);
                     }
                 }).finally(() => {
                     if (agentRunningStatus !== 'running') {
@@ -440,15 +467,29 @@ class ChannelConnectionManager {
                 // Non-agent (chat) mode: await response and send result back to IM
                 try {
 
-                    const resp = await NativeAPI.localApi("agent/messages", agentParams, { abortController });
+                    const resp = await NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal });
 
                     if (abortController.signal.aborted) return;
 
-                    const replyText = await this.extractResponseText(resp);
+                    const body = await this.readAgentResponseBody(resp);
+                    if (!resp.ok) {
+                        await this.sendAgentErrorMessage(connection, msg, body, resp.status);
+                        return;
+                    }
+
+                    const agentError = this.extractAgentMessageError(body);
+                    if (agentError) {
+                        await this.sendAgentErrorMessage(connection, msg, agentError);
+                        return;
+                    }
+
+                    const replyText = this.extractResponseText(body);
                     console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status} replyText:${replyText}`);
                     if (replyText) {
-                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: replyText }], { replyTo: msg.messageId });
-                        console.log(`[IM] → Sent text reply to ${connection.channelProvider}/${msg.channelId}`);
+                        const delivered = await this.sendChannelTextSafely(connection, msg, replyText, { replyTo: msg.messageId });
+                        if (delivered) {
+                            console.log(`[IM] → Sent text reply to ${connection.channelProvider}/${msg.channelId}`);
+                        }
 
                         if (commandConfig?.['auto_audio_play'] === true) {
                             // Stream TTS: split into sentence chunks, generate & send each as it's ready
@@ -471,8 +512,9 @@ class ChannelConnectionManager {
                     if (abortController.signal.aborted) {
                         console.log(`[IM] Agent request aborted: ${connection.agentCommandKey}/${msg.channelId}`);
                     } else {
-                        console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, err.message);
-                        await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
+                        const errorMessage = this.extractErrorMessage(err) || "Unknown error";
+                        console.error(`[IM] ✗ Agent forward failed: ${connection.agentCommandKey}:`, errorMessage);
+                        await this.sendAgentErrorMessage(connection, msg, errorMessage);
                     }
                 } finally {
                     if (agentRunningStatus !== 'running') {
@@ -505,14 +547,11 @@ class ChannelConnectionManager {
             }
         } catch { /* ignore */ }
 
-        try {
-            await connection.provider.sendMessage(msg.channelId, [
-                { type: "text", text: `❌ Internal error: ${err?.message || String(err)}` },
-            ]);
-        } catch (sendErr: any) {
-            console.error(`[IM] Failed to deliver error message to channel:`, sendErr);
-            this.logToFile(connection.channelProvider, "ERROR", "Failed to deliver error to channel", sendErr);
-        }
+        await this.sendChannelTextSafely(
+            connection,
+            msg,
+            `Internal error: ${this.extractErrorMessage(err) || "Unknown error"}`,
+        );
 
         if (isDisconnect) {
             this.relaunch(connection.channelProvider).catch(() => { });
@@ -699,6 +738,28 @@ class ChannelConnectionManager {
         }
     }
 
+    private async handleToggleVerboseCommand(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage, arg?: string): Promise<void> {
+        try {
+            const config = await CommandManageUtils.loadCommandConfig({
+                commandKey: connection.agentCommandKey,
+                includes: ["im_verbose"],
+            });
+            const current = config?.["im_verbose"] === true;
+            const next = arg === "on" ? true : arg === "off" ? false : !current;
+            await PreferenceManageUtils.updatePreference({
+                keys: ["im_verbose"],
+                value: next,
+                preferenceKey: connection.agentCommandKey,
+            });
+            const status = next ? "🔊 Verbose mode enabled" : "🔇 Verbose mode disabled";
+            console.log(`[IM] /verbose command: ${connection.agentCommandKey} im_verbose → ${next}`);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: status }]);
+        } catch (err: any) {
+            console.error(`[IM] /verbose command failed:`, err.message);
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: `❌ Error: ${err.message}` }]);
+        }
+    }
+
     /**
      * Show the current LLM provider + model configured on the bound agent.
      */
@@ -729,11 +790,9 @@ class ChannelConnectionManager {
 
     /**
      * Extract text the bot should send to the channel itself.
-     * - `text` content is returned directly.
-     * - `flow_step` content whose result lacks `"success":true` is surfaced as an error,
-     *   so the user sees why the tool call failed instead of silence.
-     * - Successful tool calls (the agent already delivered via IM tools) are skipped.
-     * - Any other content type makes the agent owner of delivery — return null.
+     * Only collects `text` content from assistant messages; any other content
+     * type (tool calls, flow steps, etc.) means the agent owns delivery and we
+     * return null so the bot stays out of the way.
      */
     private extractTextOnlyReply(json: any): string | null {
         if (json?.type !== "messages" || !Array.isArray(json.messages)) return null;
@@ -747,9 +806,6 @@ class ChannelConnectionManager {
             for (const c of contents) {
                 if (c.type === "text") {
                     if (c.text) texts.push(c.text);
-                } else if (c.type === "flow_step") {
-                    const errorText = this.extractFlowStepError(c);
-                    if (errorText) texts.push(`❌ ${errorText}`);
                 } else {
                     return null;
                 }
@@ -758,32 +814,86 @@ class ChannelConnectionManager {
         return texts.length > 0 ? texts.join("\n") : null;
     }
 
-    /**
-     * Pull an error message out of a flow_step whose results don't contain `"success":true`.
-     * Returns null when the tool call succeeded.
-     */
-    private extractFlowStepError(step: any): string | null {
-        const results = Array.isArray(step?.flowResults) ? step.flowResults : [];
-        for (const result of results) {
-            const contents = Array.isArray(result?.content) ? result.content : [];
+    private extractAgentMessageError(json: any): string | null {
+        if (!json) return null;
+
+        if (json?.type === "error" || json?.error) {
+            return this.extractErrorMessage(json);
+        }
+
+        if (json?.type !== "messages" || !Array.isArray(json.messages)) return null;
+
+        for (const message of json.messages) {
+            const contents = Array.isArray(message.content) ? message.content : [];
             for (const c of contents) {
-                if (c.type !== "text" || typeof c.text !== "string") continue;
-                if (c.text.includes('"success":true')) continue;
-                try {
-                    const parsed = JSON.parse(c.text);
-                    if (parsed?.error) return String(parsed.error);
-                } catch {
-                    // not JSON — fall through and surface raw text
-                }
-                return c.text;
+                if (c?.type !== "flow_step") continue;
+                const errorText = this.extractFlowStepError(c);
+                if (errorText) return errorText;
             }
         }
+
         return null;
     }
 
-    private async extractResponseText(resp: Response): Promise<string | null> {
+    private extractFlowStepError(step: any): string | null {
+        const stepFailed =
+            step?.success === false ||
+            step?.ok === false ||
+            step?.status === "error" ||
+            step?.type === "error";
+        const stepError = (stepFailed || step?.error) ? this.extractKnownErrorField(step) : null;
+        if (stepError) return stepError;
+
+        const results = Array.isArray(step?.flowResults) ? step.flowResults : [];
+        for (const result of results) {
+            const resultFailed =
+                result?.success === false ||
+                result?.ok === false ||
+                result?.status === "error" ||
+                result?.type === "error";
+
+            const resultError = resultFailed ? this.extractKnownErrorField(result) : null;
+            if (resultError) return resultError;
+
+            const contents = Array.isArray(result?.content) ? result.content : [];
+            for (const c of contents) {
+                if (c?.type !== "text" || typeof c.text !== "string") continue;
+
+                const parsed = this.parseJsonFromText(c.text);
+                if (parsed) {
+                    if (parsed.success === true || parsed.ok === true) continue;
+                    const parsedFailed =
+                        parsed.success === false ||
+                        parsed.ok === false ||
+                        parsed.status === "error" ||
+                        parsed.type === "error" ||
+                        !!parsed.error;
+                    if (!parsedFailed) continue;
+                    const parsedError = this.extractKnownErrorField(parsed);
+                    if (parsedError) return parsedError;
+                    return this.extractErrorMessage(parsed);
+                }
+
+                if (resultFailed) return c.text;
+            }
+        }
+
+        return null;
+    }
+
+    private async readAgentResponseBody(resp: Response): Promise<any> {
         try {
-            const body = await resp.json();
+            const text = await resp.text();
+            if (!text) return null;
+            return this.parseJsonFromText(text) ?? text;
+        } catch (err) {
+            console.error("[IM] Failed to parse agent response:", err);
+            return null;
+        }
+    }
+
+    private extractResponseText(body: any): string | null {
+        try {
             if (typeof body === "string") return body;
             if (body?.type === "text" && typeof body.content === "string") return body.content;
             if (body?.type === "messages" && Array.isArray(body.messages)) {
@@ -800,6 +910,149 @@ class ChannelConnectionManager {
             console.error("[IM] Failed to parse agent response:", err);
         }
         return null;
+    }
+
+    private async sendAgentErrorMessage(
+        connection: ActiveConnection,
+        msg: IMChannelProvider.IncomingMessage,
+        error: any,
+        status?: number,
+    ): Promise<void> {
+        await this.sendChannelTextSafely(connection, msg, this.buildAgentErrorText(error, status), {
+            replyTo: msg.messageId,
+        }, "Agent error: failed to deliver error details. Check the local IM channel logs.");
+    }
+
+    private async sendChannelTextSafely(
+        connection: ActiveConnection,
+        msg: IMChannelProvider.IncomingMessage,
+        text: string,
+        options?: IMChannelProvider.SendMessageOptions,
+        fallbackText?: string,
+    ): Promise<boolean> {
+        const safeText = this.prepareTextForProvider(connection, msg, text);
+
+        try {
+            await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: safeText }], options);
+            return true;
+        } catch (sendErr: any) {
+            console.error(`[IM] Failed to deliver message to channel:`, sendErr);
+            this.logToFile(connection.channelProvider, "ERROR", "Failed to deliver message to channel", sendErr);
+
+            if (!fallbackText) return false;
+
+            const fallback = this.prepareTextForProvider(connection, msg, fallbackText);
+            try {
+                await connection.provider.sendMessage(msg.channelId, [{ type: "text", text: fallback }], options);
+                return true;
+            } catch (fallbackErr: any) {
+                console.error(`[IM] Failed to deliver fallback error message to channel:`, fallbackErr);
+                this.logToFile(connection.channelProvider, "ERROR", "Failed to deliver fallback error to channel", fallbackErr);
+                return false;
+            }
+        }
+    }
+
+    private buildAgentErrorText(error: any, status?: number): string {
+        const message = this.compactErrorMessage(this.extractErrorMessage(error) || "Unknown error");
+        const statusText = typeof status === "number" && status >= 400 ? ` (${status})` : "";
+        return this.truncateForChannel(`Agent error${statusText}: ${message}`);
+    }
+
+    private extractKnownErrorField(value: any): string | null {
+        if (!value || typeof value !== "object") return null;
+        if (value.success === true || value.ok === true) return null;
+
+        if (typeof value.error === "string") return value.error;
+        if (value.error) return this.extractErrorMessage(value.error);
+        if (typeof value.message === "string") return value.message;
+        if (typeof value.detail === "string") return value.detail;
+        if (typeof value.details === "string") return value.details;
+        if (typeof value.description === "string") return value.description;
+
+        return null;
+    }
+
+    private extractErrorMessage(error: any): string | null {
+        if (error == null) return null;
+
+        if (typeof error === "string") {
+            const parsed = this.parseJsonFromText(error);
+            if (parsed) {
+                const parsedMessage = this.extractErrorMessage(parsed);
+                if (parsedMessage) return parsedMessage;
+            }
+            return error;
+        }
+
+        if (error instanceof Error) {
+            return this.extractErrorMessage(error.message) || error.message;
+        }
+
+        if (typeof error === "object") {
+            const known = this.extractKnownErrorField(error);
+            if (known) return known;
+
+            try {
+                return JSON.stringify(error);
+            } catch {
+                return String(error);
+            }
+        }
+
+        return String(error);
+    }
+
+    private parseJsonFromText(text: string): any | null {
+        const trimmed = text.trim();
+        if (!trimmed) return null;
+
+        try {
+            return JSON.parse(trimmed);
+        } catch {
+            // Some SDK errors prefix the JSON body with class/status text.
+        }
+
+        const start = trimmed.indexOf("{");
+        const end = trimmed.lastIndexOf("}");
+        if (start >= 0 && end > start) {
+            try {
+                return JSON.parse(trimmed.slice(start, end + 1));
+            } catch {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private prepareTextForProvider(
+        connection: ActiveConnection,
+        msg: IMChannelProvider.IncomingMessage,
+        text: string,
+    ): string {
+        const truncated = this.truncateForChannel(text);
+        if (this.isTelegramMessage(connection, msg)) {
+            return this.escapeTelegramMarkdown(truncated);
+        }
+        return truncated;
+    }
+
+    private isTelegramMessage(connection: ActiveConnection, msg: IMChannelProvider.IncomingMessage): boolean {
+        return msg.platform === "telegram" || connection.channelProvider.toLowerCase().includes("telegram");
+    }
+
+    private escapeTelegramMarkdown(text: string): string {
+        return text.replace(/([_*`\[])/g, "\\$1");
+    }
+
+    private compactErrorMessage(text: string): string {
+        return text.replace(/\s+/g, " ").trim();
+    }
+
+    private truncateForChannel(text: string, maxLength = 1800): string {
+        if (text.length <= maxLength) return text;
+        return `${text.slice(0, maxLength - 3)}...`;
     }
 
     private emitStatusEvent(info: { channelProvider: string; status: string; error?: string }): void {
@@ -821,11 +1074,20 @@ class ChannelConnectionManager {
 
     private cleanStaleRecords(): void {
         const records = this.loadState();
-        const alive = records.filter(r => this.isProcessAlive(r.pid));
-        if (alive.length !== records.length) {
-            console.log(`[IM] Cleaned ${records.length - alive.length} stale connection record(s)`);
+        const alive: ConnectionRecord[] = [];
+        const stale: ConnectionRecord[] = [];
+        for (const r of records) {
+            if (this.isProcessAlive(r.pid)) alive.push(r);
+            else stale.push(r);
+        }
+        if (stale.length > 0) {
+            console.log(`[IM] Cleaned ${stale.length} stale connection record(s)`);
             this.ensureDir();
             fs.writeFileSync(STATE_FILE, JSON.stringify(alive, null, 2));
+            // Drop their locks so a fresh launcher can reclaim them
+            for (const r of stale) {
+                try { fs.unlinkSync(this.lockPath(r.channelProvider)); } catch { /* ignore */ }
+            }
         }
     }
 
@@ -860,6 +1122,7 @@ class ChannelConnectionManager {
             startedAt: connection.startedAt,
             error: connection.error,
             pid: process.pid,
+            threadId,
         };
 
         if (idx >= 0) {
@@ -876,6 +1139,68 @@ class ChannelConnectionManager {
         const filtered = records.filter(r => r.channelProvider !== channelProvider);
         this.ensureDir();
         fs.writeFileSync(STATE_FILE, JSON.stringify(filtered, null, 2));
+    }
+
+    // --- Per-channel ownership lock ---
+    // O_EXCL create on a per-channel file. This is atomic on POSIX, so two
+    // launchers (Workers in the same process or separate processes) cannot both
+    // succeed. The lock body records pid:threadId so we can detect a stale lock
+    // left by a crashed owner and reclaim it.
+
+    private lockPath(channelProvider: string): string {
+        const safe = channelProvider.replace(/[^A-Za-z0-9_.-]/g, "_");
+        return path.join(LOCK_DIR, `${safe}.lock`);
+    }
+
+    private acquireLock(channelProvider: string): boolean {
+        if (!fs.existsSync(LOCK_DIR)) fs.mkdirSync(LOCK_DIR, { recursive: true });
+        const lockFile = this.lockPath(channelProvider);
+        const ourId = `${process.pid}:${threadId}`;
+
+        try {
+            fs.writeFileSync(lockFile, ourId, { flag: "wx" });
+            return true;
+        } catch (err: any) {
+            if (err?.code !== "EEXIST") throw err;
+        }
+
+        // Lock exists — check liveness of the owner
+        let ownerPid = NaN;
+        let ownerThread = NaN;
+        try {
+            const content = fs.readFileSync(lockFile, "utf-8");
+            const [pidStr, tidStr] = content.split(":");
+            ownerPid = parseInt(pidStr, 10);
+            ownerThread = parseInt(tidStr, 10);
+        } catch {
+            // unreadable, treat as stale
+        }
+
+        // Already owned by us (idempotent re-entry)
+        if (ownerPid === process.pid && ownerThread === threadId) return true;
+
+        if (Number.isFinite(ownerPid) && this.isProcessAlive(ownerPid)) return false;
+
+        // Stale lock — reclaim
+        try {
+            fs.writeFileSync(lockFile, ourId);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    private releaseLock(channelProvider: string): void {
+        const lockFile = this.lockPath(channelProvider);
+        try {
+            const content = fs.readFileSync(lockFile, "utf-8");
+            const [pidStr, tidStr] = content.split(":");
+            if (parseInt(pidStr, 10) === process.pid && parseInt(tidStr, 10) === threadId) {
+                fs.unlinkSync(lockFile);
+            }
+        } catch {
+            // missing or already released
+        }
     }
 }
 
