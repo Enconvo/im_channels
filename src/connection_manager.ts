@@ -380,7 +380,7 @@ class ChannelConnectionManager {
             const commandConfig = await CommandManageUtils.loadCommandConfig({ commandKey: connection.agentCommandKey, includes: ['auto_audio_play'] })
 
 
-            console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey}, agentMode: ${isAgentMode}`);
+            // console.log(`[IM]   Forwarding to agent: ${connection.agentCommandKey}, agentMode: ${isAgentMode}`);
 
             const { inputText, remainingFiles } = await this.transcribeVoiceFiles(msg);
             const agentParams: SendRequestOptions = {
@@ -430,7 +430,7 @@ class ChannelConnectionManager {
                 // Agent mode: fire-and-forget — the agent will use IM tools to reply
                 void NativeAPI.localApi("agent/messages", agentParams, { signal: abortController.signal }).then(async (resp) => {
                     const body = await this.readAgentResponseBody(resp);
-                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`, JSON.stringify(body,null,2));
+                    // console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status}`, JSON.stringify(body,null,2));
 
                     if (!resp.ok) {
                         await this.sendAgentErrorMessage(connection, msg, body, resp.status);
@@ -442,7 +442,7 @@ class ChannelConnectionManager {
                     if (textReply) {
                         const delivered = await this.sendChannelTextSafely(connection, msg, textReply, { replyTo: msg.messageId });
                         if (delivered) {
-                            console.log(`[IM] → Sent text-only agent reply to ${connection.channelProvider}/${msg.channelId}`);
+                            // console.log(`[IM] → Sent text-only agent reply to ${connection.channelProvider}/${msg.channelId}`);
                         }
                     }
 
@@ -484,7 +484,7 @@ class ChannelConnectionManager {
                     }
 
                     const replyText = this.extractResponseText(body);
-                    console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status} replyText:${replyText}`);
+                    // console.log(`[IM] → Agent responded: ${connection.agentCommandKey}, status: ${resp.status} replyText:${replyText}`);
                     if (replyText) {
                         const delivered = await this.sendChannelTextSafely(connection, msg, replyText, { replyTo: msg.messageId });
                         if (delivered) {
@@ -790,28 +790,30 @@ class ChannelConnectionManager {
 
     /**
      * Extract text the bot should send to the channel itself.
-     * Only collects `text` content from assistant messages; any other content
-     * type (tool calls, flow steps, etc.) means the agent owns delivery and we
-     * return null so the bot stays out of the way.
+     * If any message contains a `flow_step` the agent owns delivery and we
+     * return null. Otherwise return the last assistant message's last text
+     * content (ignoring thinking/other non-text blocks).
      */
     private extractTextOnlyReply(json: any): string | null {
         if (json?.type !== "messages" || !Array.isArray(json.messages)) return null;
 
-        const texts: string[] = [];
         for (const message of json.messages) {
-            if (message.role !== "assistant") continue;
             const contents = Array.isArray(message.content) ? message.content : [];
-            if (contents.length === 0) continue;
-
             for (const c of contents) {
-                if (c.type === "text") {
-                    if (c.text) texts.push(c.text);
-                } else {
-                    return null;
-                }
+                if (c?.type === "flow_step") return null;
             }
         }
-        return texts.length > 0 ? texts.join("\n") : null;
+
+        for (let i = json.messages.length - 1; i >= 0; i--) {
+            const message = json.messages[i];
+            if (message.role !== "assistant") continue;
+            const contents = Array.isArray(message.content) ? message.content : [];
+            for (let j = contents.length - 1; j >= 0; j--) {
+                const c = contents[j];
+                if (c?.type === "text" && c.text) return c.text;
+            }
+        }
+        return null;
     }
 
     private extractAgentMessageError(json: any): string | null {

@@ -4,7 +4,7 @@ description: >
   IM channel integration for Telegram and Discord. A channel provider is a bot on an IM platform (e.g. a Telegram bot, a Discord bot) that is bound to exactly one Enconvo agent: incoming messages are forwarded to the bound agent, which generates the reply. One agent can be bound to multiple channel providers across different platforms, but each channel provider can be bound to at most one agent.
 metadata:
   author: ysnows
-  version: "0.0.42"
+  version: "0.0.51"
 ---
 
 # IM Channels — Setup & Management
@@ -174,6 +174,7 @@ Just use the `local_api` tool to request these APIs.
 | `im_channels/delete` | Delete an IM channel provider command. Only user-created providers (create_for === "chat") can be deleted; built-in providers are protected.. Params: `channel_provider` (string, required) |
 | `im_channels/launch_channel` | Launch a channel listener for a provider, reading config from preferences or using credential overrides. _4 params — use `check_local_api_schemas` tool_ |
 | `im_channels/launched_channels` | List all currently active channel connections from shared state. _No params_ |
+| `im_channels/reply` | Channel-agnostic reply: dispatches to the channel-specific reply API based on the `channel_provider` command key (e.g. `im_channels|telegram` → `im_channels/telegram_actions/reply`).. _6 params — use `check_local_api_schemas` tool_ |
 | `im_channels/restore_channels` | Restore all enabled channels, called on app startup or manually. _No params_ |
 | `im_channels/stop_channel` | Stop a running channel listener. Params: `channel_provider` (string, required) |
 | `im_channels/typing_indicator` | Send a typing indicator to a channel, best-effort with errors silently ignored. Params: `channel_provider` (string, required), `channel_id` (string, required) |

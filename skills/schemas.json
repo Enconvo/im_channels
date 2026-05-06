@@ -153,6 +153,49 @@
     }
   },
   {
+    "name": "reply",
+    "title": "reply",
+    "description": "Channel-agnostic reply: dispatches to the channel-specific reply API based on the `channel_provider` command key (e.g. `im_channels|telegram` → `im_channels/telegram_actions/reply`).",
+    "routePath": "im_channels/reply",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel_provider": {
+          "type": "string",
+          "description": "The channel provider command key, e.g. \"im_channels|telegram\""
+        },
+        "text": {
+          "type": "string",
+          "description": "Message text to send"
+        },
+        "chat_id": {
+          "type": "string",
+          "description": "Target chat ID (Telegram chat_id or Discord channel ID)"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "Target user ID for sending a Discord DM (ignored on Telegram)"
+        },
+        "reply_to": {
+          "type": "string",
+          "description": "Message ID to reply to (creates threaded reply on supported channels)"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": ""
+          },
+          "description": "Absolute file paths or URLs to attach"
+        }
+      },
+      "required": [
+        "channel_provider",
+        "text"
+      ]
+    }
+  },
+  {
     "name": "restore_channels",
     "title": "restore_channels",
     "description": "Restore all enabled channels, called on app startup or manually",
@@ -581,7 +624,7 @@
             },
             "chat_id": {
               "type": "string",
-              "description": "Target chat ID. If omitted, sends to the default configured chat."
+              "description": "Target chat ID"
             },
             "reply_to": {
               "type": "string",
@@ -598,7 +641,8 @@
           },
           "required": [
             "channel_provider",
-            "text"
+            "text",
+            "chat_id"
           ]
         },
         "routePath": "im_channels/telegram_actions/reply"
