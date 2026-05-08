@@ -4,7 +4,7 @@ description: >
   IM channel integration for Telegram and Discord. A channel provider is a bot on an IM platform (e.g. a Telegram bot, a Discord bot) that is bound to exactly one Enconvo agent: incoming messages are forwarded to the bound agent, which generates the reply. One agent can be bound to multiple channel providers across different platforms, but each channel provider can be bound to at most one agent.
 metadata:
   author: ysnows
-  version: "0.0.51"
+  version: "0.0.55"
 ---
 
 # IM Channels — Setup & Management
